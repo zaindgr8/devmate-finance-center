@@ -8,7 +8,6 @@ import FinanceView from './components/FinanceView';
 import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
-import { supabase } from './supabaseClient';
 import { today, createFinanceRecord, rolloverMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting } from './api';
 // Using PNG logo from public/logo_2.png
@@ -38,7 +37,7 @@ export default function App() {
   const [clientFilter, setClientFilter] = useState('');
   const [toast, setToast] = useState(null);
   const [dbStatus, setDbStatus] = useState('connecting'); // 'connecting', 'connected', 'error'
-  const [session, setSession] = useState(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('dm_logged_in') === 'true');
   const [mobileNav, setMobileNav] = useState(false);
 
   const showToast = (msg, type = 'success') => {
@@ -47,24 +46,9 @@ export default function App() {
   };
 
 
-  // Auth Listener
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
   // Load data from Supabase + rollover check
   useEffect(() => {
-    if (!session) return;
+    if (!isLoggedIn) return;
     
     async function init() {
       console.log("Supabase Init: Starting fetch...");
@@ -97,7 +81,18 @@ export default function App() {
       }
     }
     init();
-  }, [session]);
+  }, [isLoggedIn]);
+
+  const handleLogin = () => {
+    localStorage.setItem('dm_logged_in', 'true');
+    setIsLoggedIn(true);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('dm_logged_in');
+    setIsLoggedIn(false);
+    setView(VIEWS.DASHBOARD);
+  };
 
   // Save helpers
   const saveInvoices = useCallback((v, invToUpsert) => {
@@ -246,8 +241,8 @@ export default function App() {
   ];
 
   // Auth Check
-  if (!session) {
-    return <LoginView />;
+  if (!isLoggedIn) {
+    return <LoginView onLogin={handleLogin} />;
   }
 
   // Loading
@@ -339,13 +334,13 @@ export default function App() {
             <div className="sidebar-footer-loc">DUBAI · MUSCAT · NY</div>
             <div style={{ marginBottom: 12 }}>management@devmatesolutions.com</div>
             <button 
-              onClick={() => supabase.auth.signOut()}
+              onClick={handleLogout}
               style={{
                 width: '100%',
                 padding: '10px',
-                background: 'rgba(239, 68, 68, 0.1)',
+                background: 'rgba(239, 68, 68, 0.08)',
                 color: '#ef4444',
-                border: '1px solid rgba(239, 68, 68, 0.2)',
+                border: '1px solid rgba(239, 68, 68, 0.15)',
                 borderRadius: '8px',
                 fontSize: '12px',
                 fontWeight: '600',
@@ -356,8 +351,6 @@ export default function App() {
                 gap: '8px',
                 transition: 'all 0.2s'
               }}
-              onMouseOver={(e) => e.target.style.background = 'rgba(239, 68, 68, 0.2)'}
-              onMouseOut={(e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)'}
             >
               <Icon name="plus" size={14} style={{ transform: 'rotate(45deg)' }} />
               Logout
