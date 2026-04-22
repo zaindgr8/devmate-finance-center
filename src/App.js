@@ -6,7 +6,9 @@ import InvoiceHistory from './components/InvoiceHistory';
 import InvoicePreview from './components/InvoicePreview';
 import FinanceView from './components/FinanceView';
 import SalariesView from './components/SalariesView';
+import LoginView from './components/LoginView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
+import { supabase } from './supabaseClient';
 import { today, createFinanceRecord, rolloverMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting } from './api';
 // Using PNG logo from public/logo_2.png
@@ -36,6 +38,7 @@ export default function App() {
   const [clientFilter, setClientFilter] = useState('');
   const [toast, setToast] = useState(null);
   const [dbStatus, setDbStatus] = useState('connecting'); // 'connecting', 'connected', 'error'
+  const [session, setSession] = useState(null);
   const [mobileNav, setMobileNav] = useState(false);
 
   const showToast = (msg, type = 'success') => {
@@ -44,8 +47,25 @@ export default function App() {
   };
 
 
+  // Auth Listener
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
   // Load data from Supabase + rollover check
   useEffect(() => {
+    if (!session) return;
+    
     async function init() {
       console.log("Supabase Init: Starting fetch...");
       try {
@@ -77,7 +97,7 @@ export default function App() {
       }
     }
     init();
-  }, []);
+  }, [session]);
 
   // Save helpers
   const saveInvoices = useCallback((v, invToUpsert) => {
@@ -225,6 +245,11 @@ export default function App() {
     { id: VIEWS.REPORTS, label: 'Reports', icon: 'chart' },
   ];
 
+  // Auth Check
+  if (!session) {
+    return <LoginView />;
+  }
+
   // Loading
   if (loading) {
     return (
@@ -312,7 +337,31 @@ export default function App() {
 
           <div className="sidebar-footer">
             <div className="sidebar-footer-loc">DUBAI · MUSCAT · NY</div>
-            <div>management@devmatesolutions.com</div>
+            <div style={{ marginBottom: 12 }}>management@devmatesolutions.com</div>
+            <button 
+              onClick={() => supabase.auth.signOut()}
+              style={{
+                width: '100%',
+                padding: '10px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                color: '#ef4444',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                transition: 'all 0.2s'
+              }}
+              onMouseOver={(e) => e.target.style.background = 'rgba(239, 68, 68, 0.2)'}
+              onMouseOut={(e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)'}
+            >
+              <Icon name="plus" size={14} style={{ transform: 'rotate(45deg)' }} />
+              Logout
+            </button>
           </div>
         </aside>
 
