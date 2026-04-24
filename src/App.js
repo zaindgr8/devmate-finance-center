@@ -455,8 +455,8 @@ export default function App() {
             <div>
               <div className="sidebar-brand-name">DEVMATE</div>
               <div className="sidebar-brand-sub" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                Invoice System
-                <div 
+                Finance Center
+                <div
                   title={dbStatus === 'connected' ? 'Cloud Connected' : 'Connection Error'}
                   style={{ 
                     width: 8, height: 8, borderRadius: '50%', 
