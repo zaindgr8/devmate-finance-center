@@ -216,7 +216,7 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
                 <div style={{ background: 'var(--bg)', padding: 16, borderRadius: 8, marginBottom: 16, border: '1px solid var(--border)' }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
                     <div>
-                      <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Project / Description</div>
+                      <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Project Description</div>
                       <input type="text" className="form-input" value={newSal.projectName} onChange={e => setNewSal({ ...newSal, projectName: e.target.value })} placeholder="e.g. NextJS Website" />
                     </div>
                     <div>
