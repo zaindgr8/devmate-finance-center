@@ -3,7 +3,7 @@ import Icon from './Icon';
 import { Badge, StatCard, Btn } from './UI';
 import { fmtDate, fmtCurrency, today } from '../utils/helpers';
 
-export default function Dashboard({ invoices, clients, totalRevenue, totalPaid, totalOutstanding, onNew, onView }) {
+export default function Dashboard({ invoices, clients, globalTotal = 0, globalInvoiced = 0, globalReceived = 0, globalPending = 0, onNew, onView }) {
   const recent = invoices.slice(0, 5);
 
   return (
@@ -21,10 +21,10 @@ export default function Dashboard({ invoices, clients, totalRevenue, totalPaid, 
       </div>
 
       <div className="stats-grid" style={{ display: 'flex', gap: 14, marginBottom: 24, flexWrap: 'wrap' }}>
-        <StatCard label="Total Revenue" value={`$${totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--primary)" />
-        <StatCard label="Amount Received" value={`$${totalPaid.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--success)" />
-        <StatCard label="Outstanding" value={`$${totalOutstanding.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--warning)" />
-        <StatCard label="Total Clients" value={clients.length} accent="var(--info)" />
+        <StatCard label="Total Amount" value={`AED ${globalTotal.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--primary)" />
+        <StatCard label="Invoiced" value={`AED ${globalInvoiced.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--text-mid)" />
+        <StatCard label="Received" value={`AED ${globalReceived.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--success)" />
+        <StatCard label="Pending" value={`AED ${globalPending.toLocaleString('en-US', { minimumFractionDigits: 0 })}`} accent="var(--info)" />
       </div>
 
       <div className="card" style={{ overflow: 'hidden' }}>
@@ -53,7 +53,7 @@ export default function Dashboard({ invoices, clients, totalRevenue, totalPaid, 
                     <td>{fmtCurrency(inv.totalPayment, inv.currency)}</td>
                     <td style={{ color: 'var(--success)' }}>{fmtCurrency(inv.payingNow, inv.currency)}</td>
                     <td>
-                      <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : 'red'}>
+                      <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : inv.status === 'pending' ? 'blue' : 'red'}>
                         {inv.status || 'unpaid'}
                       </Badge>
                     </td>

@@ -51,8 +51,14 @@ export async function fetchAllData() {
 }
 
 export async function upsertClient(client) {
-  const { error } = await supabase.from('clients').upsert(toSnake(client), { onConflict: 'name' });
-  if (error) console.error('Error upserting client:', error);
+  const payload = toSnake(client);
+  // Prefer conflict resolution by 'id' if we have it, otherwise fallback to 'name'
+  const conflictTarget = payload.id ? 'id' : 'name';
+  const { error } = await supabase.from('clients').upsert(payload, { onConflict: conflictTarget });
+  if (error) {
+    console.error('Error upserting client:', error);
+    throw error;
+  }
 }
 
 export async function deleteClient(name) {
@@ -61,12 +67,15 @@ export async function deleteClient(name) {
 }
 
 export async function upsertInvoice(invoice) {
-  // Extract and map specific nested or mismatched fields if needed
-  // UI keeps financeData mixed in occasionally. We should store it in finance_raw as jsonb.
   const payload = toSnake(invoice);
+  // Remap financeData → finance_raw (jsonb column)
   if (payload.finance_data) {
     payload.finance_raw = payload.finance_data;
     delete payload.finance_data;
+  }
+  // Ensure project_name is always explicitly set
+  if (!('project_name' in payload)) {
+    payload.project_name = invoice.projectName || '';
   }
   const { error } = await supabase.from('invoices').upsert(payload, { onConflict: 'invoice_number' });
   if (error) console.error('Error upserting invoice:', error);

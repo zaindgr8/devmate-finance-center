@@ -10,10 +10,13 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
   const dflt = {
     clientName: '', clientDesignation: '', businessName: '', clientEmail: '',
     clientPhone: '', clientAddress: '', paymentLink: '', date: today(),
-    dueDate: '', currency: 'USD', items: [{ ...empty }], payingNow: 0,
-    specialNotes: '', status: 'unpaid',
+    dueDate: '', currency: 'AED', items: [{ ...empty }], payingNow: 0,
+    specialNotes: '', status: 'pending', projectName: '',
   };
   const [form, setForm] = useState(editInv ? { ...dflt, ...editInv } : dflt);
+  const [paymentConfirmed, setPaymentConfirmed] = useState(editInv && editInv.status !== 'pending' && editInv.status !== 'scheduled');
+  const [isScheduled, setIsScheduled] = useState(editInv?.status === 'scheduled');
+  const [scheduledDate, setScheduledDate] = useState(editInv?.scheduledDate || '');
 
   // ── Finance state ──────────────────────────────────────────────
   const finDflt = editInv?.financeData || { paymentType: 'project', salaries: [], allahShare: 0, saving: 0, _allahManual: false };
@@ -62,7 +65,21 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
       alert('Please fill client name, business name, and at least one item.');
       return;
     }
-    const st = Number(form.payingNow) >= total ? 'paid' : Number(form.payingNow) > 0 ? 'partial' : 'unpaid';
+    // Scheduled invoice
+    if (isScheduled) {
+      if (!scheduledDate) { alert('Please select a scheduled date and time.'); return; }
+      const schedTime = new Date(scheduledDate);
+      if (schedTime <= new Date()) { alert('Scheduled date must be in the future.'); return; }
+      const finRecord = { ...finData, salaries: finData.salaries.filter((e) => e.employee || e.amount), totalSalaries, allahShare, saving: Number(finData.saving) || 0 };
+      onSave({ ...form, totalPayment: total, remaining: Math.max(0, rem), status: 'scheduled', scheduledDate, financeData: finRecord });
+      return;
+    }
+    let st = 'unpaid';
+    if (paymentConfirmed) {
+      st = Number(form.payingNow) >= total ? 'paid' : Number(form.payingNow) > 0 ? 'partial' : 'unpaid';
+    } else {
+      st = 'pending';
+    }
     const finRecord = {
       ...finData,
       salaries: finData.salaries.filter((e) => e.employee || e.amount),
@@ -121,6 +138,27 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
         </div>
         <Input label="Address" value={form.clientAddress} onChange={(e) => set('clientAddress', e.target.value)} placeholder="Business address" />
         <Input label="Payment Link" value={form.paymentLink} onChange={(e) => set('paymentLink', e.target.value)} placeholder="https://payment-link.com/..." />
+        
+        {/* Project Selection */}
+        {(() => {
+          const searchName = (form.clientName || '').toLowerCase().trim();
+          const selectedClientObj = clients.find(c => (c.name || '').toLowerCase().trim() === searchName);
+          const clientProjects = selectedClientObj?.projects || [];
+          if (clientProjects.length > 0) {
+            return (
+              <div className="form-group" style={{ marginTop: 16 }}>
+                <label className="form-label">Client Project</label>
+                <select className="form-select" value={form.projectName || ''} onChange={(e) => set('projectName', e.target.value)}>
+                  <option value="">-- No Project Selected --</option>
+                  {clientProjects.map(p => (
+                    <option key={p.id} value={p.name}>{p.name} (AED {Number(p.total).toLocaleString()})</option>
+                  ))}
+                </select>
+              </div>
+            );
+          }
+          return null;
+        })()}
       </div>
 
       {/* Invoice Details */}
@@ -130,6 +168,38 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
           <Input label="Invoice Date" type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
           <Input label="Due Date" type="date" value={form.dueDate} onChange={(e) => set('dueDate', e.target.value)} />
           <Select label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} options={CURRENCIES} />
+        </div>
+
+        {/* Schedule Invoice Toggle */}
+        <div style={{ marginTop: 18, padding: '14px 18px', borderRadius: 10, border: `1.5px solid ${isScheduled ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`, background: isScheduled ? 'rgba(124,58,237,0.05)' : 'transparent', transition: 'all 0.2s' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: isScheduled ? '#7c3aed' : 'var(--text-main)', display: 'flex', alignItems: 'center', gap: 6 }}>🕐 Schedule Invoice for Later</div>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 2 }}>Invoice activates automatically at the scheduled time</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setIsScheduled(!isScheduled); if (isScheduled) setScheduledDate(''); }}
+              style={{ width: 44, height: 24, borderRadius: 12, border: 'none', position: 'relative', background: isScheduled ? '#7c3aed' : 'var(--border)', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0 }}
+            >
+              <div style={{ position: 'absolute', top: 2, left: isScheduled ? 22 : 2, width: 20, height: 20, background: '#fff', borderRadius: '50%', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
+            </button>
+          </div>
+          {isScheduled && (
+            <div style={{ marginTop: 14 }}>
+              <label className="form-label">Activate On (Date & Time) *</label>
+              <input
+                type="datetime-local"
+                className="form-input"
+                value={scheduledDate}
+                onChange={(e) => setScheduledDate(e.target.value)}
+                min={new Date().toISOString().slice(0, 16)}
+              />
+              <div style={{ marginTop: 8, fontSize: 12, color: '#7c3aed', background: 'rgba(124,58,237,0.08)', borderRadius: 6, padding: '6px 12px' }}>
+                📅 This invoice will automatically switch to <strong>Pending Confirmation</strong> status at the scheduled time when the app is opened.
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -161,13 +231,38 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
 
       {/* Payment Summary */}
       <div className="section-card">
-        <h3 className="section-title">Payment Summary</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <h3 className="section-title" style={{ marginBottom: 0 }}>Payment Summary</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: paymentConfirmed ? 'var(--text-mid)' : 'var(--info)' }}>Pending</span>
+            <button
+              type="button"
+              onClick={() => setPaymentConfirmed(!paymentConfirmed)}
+              style={{
+                width: 44, height: 24, borderRadius: 12, border: 'none', position: 'relative',
+                background: paymentConfirmed ? 'var(--success)' : 'var(--border)',
+                cursor: 'pointer', transition: 'background 0.2s'
+              }}
+            >
+              <div style={{
+                position: 'absolute', top: 2, left: paymentConfirmed ? 22 : 2, width: 20, height: 20,
+                background: '#fff', borderRadius: '50%', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
+              }} />
+            </button>
+            <span style={{ fontSize: 13, fontWeight: 600, color: paymentConfirmed ? 'var(--success)' : 'var(--text-mid)' }}>Confirmed</span>
+          </div>
+        </div>
+        {!paymentConfirmed && (
+          <div style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 8 }}>
+            ℹ️ Invoice will be created as <strong>Pending Confirmation</strong>. Go to Invoices to confirm once payment is received.
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           <div>
-            <div className="form-label">Total</div>
+            <div className="form-label">Total Invoice Amount</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--primary)' }}>{fmtCurrency(total, form.currency)}</div>
           </div>
-          <Input label="Paying Now" type="number" value={form.payingNow} onChange={(e) => set('payingNow', e.target.value)} min="0" max={total} />
+          <Input label="Invoice Amount (Paying)" type="number" value={form.payingNow} onChange={(e) => set('payingNow', e.target.value)} min="0" max={total} />
           <div>
             <div className="form-label">Remaining</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: rem > 0 ? 'var(--warning)' : 'var(--success)' }}>
@@ -264,7 +359,7 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
                           style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontFamily: 'Poppins,sans-serif', borderBottom: '1px solid var(--border-light)' }}
                         >
                           <span style={{ fontWeight: 600 }}>{e.employee}</span>
-                          <span style={{ color: 'var(--text-light)', marginLeft: 8, fontSize: 12 }}>Last: ${Number(e.amount).toLocaleString()}</span>
+                          <span style={{ color: 'var(--text-light)', marginLeft: 8, fontSize: 12 }}>Last: AED {Number(e.amount).toLocaleString()}</span>
                         </button>
                       ))}
                     </div>

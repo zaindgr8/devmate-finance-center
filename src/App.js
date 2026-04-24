@@ -55,7 +55,23 @@ export default function App() {
       try {
         const db = await fetchAllData();
         console.log("Supabase Init: Data received", db);
-        setInvoices(db.invoices);
+
+        // Auto-activate any scheduled invoices whose time has passed
+        const now = new Date();
+        const activatedInvoices = db.invoices.map((inv) => {
+          if (inv.status === 'scheduled' && inv.scheduledDate && new Date(inv.scheduledDate) <= now) {
+            return { ...inv, status: 'pending' };
+          }
+          return inv;
+        });
+        const toActivate = activatedInvoices.filter(
+          (inv, idx) => inv.status !== db.invoices[idx].status
+        );
+        if (toActivate.length > 0) {
+          await Promise.all(toActivate.map((inv) => upsertInvoice(inv)));
+          showToast(`${toActivate.length} scheduled invoice(s) activated!`);
+        }
+        setInvoices(activatedInvoices);
         setClients(db.clients);
         setNextNum(db.nextNum);
         setSalaries(db.salaries);
@@ -100,10 +116,17 @@ export default function App() {
     if (invToUpsert) upsertInvoice(invToUpsert);
   }, []);
 
-  const saveClients = useCallback((v, clientToUpsert) => {
+  const saveClients = useCallback(async (v, clientToUpsert) => {
     setClients(v);
-    if (clientToUpsert) upsertClient(clientToUpsert);
-  }, []);
+    if (clientToUpsert) {
+      try {
+        await upsertClient(clientToUpsert);
+        showToast('Client data synced to database');
+      } catch (err) {
+        showToast('Failed to sync with database!', 'error');
+      }
+    }
+  }, [showToast]);
 
   const saveNextNum = useCallback((v) => {
     setNextNum(v);
@@ -123,28 +146,32 @@ export default function App() {
   // Client management
   const addOrUpdateClient = useCallback(
     (d) => {
-      const ex = clients.find((c) => c.name.toLowerCase() === d.clientName.toLowerCase());
+      const name = d.clientName || d.name;
+      if (!name) return;
+      const ex = clients.find((c) => c.name.toLowerCase() === name.toLowerCase());
       if (ex) {
         const newClient = {
           ...ex,
-          designation: d.clientDesignation || ex.designation,
+          designation: d.clientDesignation || d.designation || ex.designation,
           businessName: d.businessName || ex.businessName,
-          email: d.clientEmail || ex.email,
-          phone: d.clientPhone || ex.phone,
-          address: d.clientAddress || ex.address,
+          email: d.clientEmail || d.email || ex.email,
+          phone: d.clientPhone || d.phone || ex.phone,
+          address: d.clientAddress || d.address || ex.address,
+          projects: d.projects || ex.projects,
         };
         saveClients(
-          clients.map((c) => c.name.toLowerCase() === d.clientName.toLowerCase() ? newClient : c),
+          clients.map((c) => c.name.toLowerCase() === name.toLowerCase() ? newClient : c),
           newClient
         );
       } else {
         const newClient = {
-          name: d.clientName,
-          designation: d.clientDesignation,
+          name: name,
+          designation: d.clientDesignation || d.designation,
           businessName: d.businessName,
-          email: d.clientEmail,
-          phone: d.clientPhone,
-          address: d.clientAddress,
+          email: d.clientEmail || d.email,
+          phone: d.clientPhone || d.phone,
+          address: d.clientAddress || d.address,
+          projects: d.projects || [],
           createdAt: today(),
         };
         saveClients([...clients, newClient], newClient);
@@ -224,10 +251,47 @@ export default function App() {
     [clients, saveClients]
   );
 
-  // Stats
-  const totalRevenue = invoices.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
-  const totalPaid = invoices.reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
-  const totalOutstanding = invoices.reduce((s, i) => s + (Number(i.remaining) || 0), 0);
+  // Confirm a pending invoice — sets status to paid/partial and updates finance record
+  const handleConfirmPayment = useCallback(
+    (num) => {
+      const inv = invoices.find(i => i.invoiceNumber === num);
+      if (!inv) return;
+      const newStatus = Number(inv.payingNow) >= Number(inv.totalPayment)
+        ? 'paid'
+        : Number(inv.payingNow) > 0 ? 'partial' : 'unpaid';
+      const updatedInv = { ...inv, status: newStatus };
+      saveInvoices(invoices.map(i => i.invoiceNumber === num ? updatedInv : i), updatedInv);
+
+      // Update linked finance record — inject paidAmount now that payment is confirmed
+      const updatedFinList = finance.map(r => {
+        if (r.invoiceId === num) {
+          const paidAmount = Number(inv.payingNow) || 0;
+          const totalSalaries = Number(r.totalSalaries) || 0;
+          const allahShare = r._allahManual
+            ? Number(r.allahShare)
+            : Math.max(0, (paidAmount - totalSalaries) * 0.05);
+          const profit = paidAmount - totalSalaries - allahShare - (Number(r.saving) || 0);
+          return { ...r, paidAmount, allahShare, profit, status: newStatus };
+        }
+        return r;
+      });
+      const updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
+      saveFinanceState(updatedFinList, updatedFinItem);
+      showToast(`Invoice #${num} confirmed as ${newStatus}`);
+    },
+    [invoices, finance, saveInvoices, saveFinanceState]
+  );
+
+  // Stats — only count confirmed (non-pending) invoices in received/outstanding
+  const globalTotal = clients.reduce((sum, c) => {
+    const ci = invoices.filter((i) => i.clientName === c.name);
+    const projectsTotal = (c.projects || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
+    const invoiced = ci.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
+    return sum + (projectsTotal > 0 ? projectsTotal : invoiced);
+  }, 0);
+  const globalInvoiced = invoices.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
+  const globalReceived = invoices.filter(i => i.status !== 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
+  const globalPending = Math.max(0, globalTotal - globalReceived);
 
   // Nav items
   const nav = [
@@ -364,9 +428,10 @@ export default function App() {
             <Dashboard
               invoices={invoices}
               clients={clients}
-              totalRevenue={totalRevenue}
-              totalPaid={totalPaid}
-              totalOutstanding={totalOutstanding}
+              globalTotal={globalTotal}
+              globalInvoiced={globalInvoiced}
+              globalReceived={globalReceived}
+              globalPending={globalPending}
               onNew={() => { setEditInv(null); setView(VIEWS.CREATE); }}
               onView={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
             />
@@ -393,6 +458,7 @@ export default function App() {
               onEdit={(inv) => { setEditInv(inv); setView(VIEWS.CREATE); }}
               onDelete={handleDeleteInvoice}
               onUpdateStatus={handleUpdateStatus}
+              onConfirmPayment={handleConfirmPayment}
             />
           )}
 

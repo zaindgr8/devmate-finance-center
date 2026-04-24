@@ -135,7 +135,7 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
         ].map(({ label, val, color }) => (
           <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', boxShadow: 'var(--shadow)' }}>
             <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>{label}</div>
-            <div style={{ fontSize: 24, fontWeight: 700, color }}>${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <div style={{ fontSize: 24, fontWeight: 700, color }}>AED {val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
         ))}
       </div>
@@ -239,13 +239,13 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
                       </div>
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 600, fontSize: 14 }}>
-                      <EditCell value={total} onSave={(v) => handleFieldSave(row, 'totalSalary', v)} prefix="$" />
+                      <EditCell value={total} onSave={(v) => handleFieldSave(row, 'totalSalary', v)} prefix="AED " />
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>
-                      <EditCell value={paid} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="$" />
+                      <EditCell value={paid} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="AED " />
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 700, color: remaining > 0 ? 'var(--warning)' : 'var(--text-mid)', fontSize: 14 }}>
-                      ${remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      AED {remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td style={{ textAlign: 'center' }}>
                       <StatusPill status={rowStatus} />

@@ -94,7 +94,7 @@ function SalaryBadge({ salaries }) {
           fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'Poppins, sans-serif',
         }}
       >
-        ${total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ▾
+        AED {total.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ▾
       </button>
       {open && (
         <div style={{
@@ -106,7 +106,7 @@ function SalaryBadge({ salaries }) {
           {salaries.map((e, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '3px 0', borderBottom: '1px solid var(--border-light)' }}>
               <span style={{ color: 'var(--text-mid)' }}>{e.employee || 'Unknown'}</span>
-              <span style={{ fontWeight: 600 }}>${Number(e.amount).toLocaleString()}</span>
+              <span style={{ fontWeight: 600 }}>AED {Number(e.amount).toLocaleString()}</span>
             </div>
           ))}
         </div>
@@ -138,15 +138,18 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
 
   const rows = finance.filter((r) => r.month === activeMonth);
 
-  // summary
-  const sum = rows.reduce((acc, r) => ({
-    total: acc.total + (Number(r.totalAmount) || 0),
-    paid: acc.paid + (Number(r.paidAmount) || 0),
-    salaries: acc.salaries + (Number(r.totalSalaries) || 0),
-    allah: acc.allah + (Number(r.allahShare) || 0),
-    saving: acc.saving + (Number(r.saving) || 0),
-    profit: acc.profit + calcProfit(r),
-  }), { total: 0, paid: 0, salaries: 0, allah: 0, saving: 0, profit: 0 });
+  // summary - only include confirmed (not pending, not scheduled) in metrics other than Total Invoiced
+  const sum = rows.reduce((acc, r) => {
+    const isConfirmed = r.status !== 'pending' && r.status !== 'scheduled';
+    return {
+      total: acc.total + (Number(r.totalAmount) || 0),
+      paid: acc.paid + (isConfirmed ? (Number(r.paidAmount) || 0) : 0),
+      salaries: acc.salaries + (isConfirmed ? (Number(r.totalSalaries) || 0) : 0),
+      allah: acc.allah + (isConfirmed ? (Number(r.allahShare) || 0) : 0),
+      saving: acc.saving + (isConfirmed ? (Number(r.saving) || 0) : 0),
+      profit: acc.profit + (isConfirmed ? calcProfit(r) : 0),
+    };
+  }, { total: 0, paid: 0, salaries: 0, allah: 0, saving: 0, profit: 0 });
 
   const updateRow = (id, patch) => {
     onUpdate(id, patch);
@@ -217,7 +220,7 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
         ].map(({ label, val, color }) => (
           <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px', boxShadow: 'var(--shadow)' }}>
             <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 6 }}>{label}</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color }}>${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color }}>AED {val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
           </div>
         ))}
       </div>
@@ -348,10 +351,10 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
                       </span>
                     </td>
                     <td style={{ fontWeight: 600 }}>
-                      <EditCell value={Number(row.totalAmount) || 0} onSave={(v) => handleFieldSave(row, 'totalAmount', v)} prefix="$" />
+                      <EditCell value={Number(row.totalAmount) || 0} onSave={(v) => handleFieldSave(row, 'totalAmount', v)} prefix="AED " />
                     </td>
                     <td style={{ color: 'var(--info)', fontWeight: 600 }}>
-                      <EditCell value={Number(row.paidAmount) || 0} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="$" />
+                      <EditCell value={Number(row.paidAmount) || 0} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="AED " />
                     </td>
                     <td>
                       <SalaryBadge salaries={row.salaries} />
@@ -360,22 +363,22 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
                           <EditCell
                             value={Number(row.totalSalaries) || 0}
                             onSave={(v) => handleFieldSave(row, 'totalSalaries', v)}
-                            prefix="$"
+                            prefix="AED "
                           />
                         </div>
                       )}
                       {(!row.salaries || row.salaries.length === 0) && (
-                        <EditCell value={Number(row.totalSalaries) || 0} onSave={(v) => handleFieldSave(row, 'totalSalaries', v)} prefix="$" />
+                        <EditCell value={Number(row.totalSalaries) || 0} onSave={(v) => handleFieldSave(row, 'totalSalaries', v)} prefix="AED " />
                       )}
                     </td>
                     <td style={{ color: '#8B5CF6', fontWeight: 600 }}>
-                      <EditCell value={Number(row.allahShare) || 0} onSave={(v) => handleAllahSave(row, v)} prefix="$" />
+                      <EditCell value={Number(row.allahShare) || 0} onSave={(v) => handleAllahSave(row, v)} prefix="AED " />
                     </td>
                     <td style={{ color: 'var(--success)', fontWeight: 600 }}>
-                      <EditCell value={Number(row.saving) || 0} onSave={(v) => handleFieldSave(row, 'saving', v)} prefix="$" />
+                      <EditCell value={Number(row.saving) || 0} onSave={(v) => handleFieldSave(row, 'saving', v)} prefix="AED " />
                     </td>
                     <td style={{ fontWeight: 700, color: calcProfit(row) >= 0 ? 'var(--success)' : 'var(--primary)' }}>
-                      ${calcProfit(row).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      AED {calcProfit(row).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td><StatusPill status={rowStatus} /></td>
                     <td>

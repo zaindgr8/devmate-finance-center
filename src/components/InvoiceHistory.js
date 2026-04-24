@@ -3,7 +3,7 @@ import Icon from './Icon';
 import { Badge, Btn } from './UI';
 import { fmtDate, fmtCurrency } from '../utils/helpers';
 
-export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFilter, setClientFilter, onPreview, onEdit, onDelete, onUpdateStatus }) {
+export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFilter, setClientFilter, onPreview, onEdit, onDelete, onUpdateStatus, onConfirmPayment }) {
   let list = invoices;
   if (clientFilter) list = list.filter((i) => i.clientName === clientFilter);
   if (searchQ) {
@@ -53,15 +53,32 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
               </div>
               <div style={{ minWidth: 100, textAlign: 'right' }}>
                 <div style={{ fontWeight: 700 }}>{fmtCurrency(inv.totalPayment, inv.currency)}</div>
-                <div style={{ fontSize: 11, color: 'var(--success)' }}>Paid: {fmtCurrency(inv.payingNow, inv.currency)}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 2 }}>
+                  {inv.status === 'pending' ? 'Pending Confirm: ' : inv.status === 'scheduled' ? '🕐 Activates: ' : 'Paid: '}
+                  {inv.status === 'scheduled' ? (inv.scheduledDate ? new Date(inv.scheduledDate).toLocaleString() : '–') : fmtCurrency(inv.payingNow, inv.currency)}
+                </div>
               </div>
-              <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : 'red'}>
-                {inv.status || 'unpaid'}
-              </Badge>
+              {inv.status === 'scheduled' ? (
+                <span style={{ padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700, background: 'rgba(124,58,237,0.12)', color: '#7c3aed', whiteSpace: 'nowrap' }}>SCHEDULED</span>
+              ) : (
+                <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : inv.status === 'pending' ? 'blue' : 'red'}>
+                  {inv.status === 'pending' ? 'pending' : (inv.status || 'unpaid')}
+                </Badge>
+              )}
               <div style={{ display: 'flex', gap: 6 }}>
-                {inv.status !== 'paid' && (
+                {inv.status === 'pending' && (
+                  <Btn variant="primary" size="sm" onClick={() => onConfirmPayment(inv.invoiceNumber)} title="Confirm Payment">
+                    Confirm
+                  </Btn>
+                )}
+                {inv.status !== 'paid' && inv.status !== 'pending' && inv.status !== 'scheduled' && (
                   <Btn variant="success" size="sm" onClick={() => onUpdateStatus(inv.invoiceNumber, 'paid')} title="Mark Paid">
                     <Icon name="check" size={12} />
+                  </Btn>
+                )}
+                {inv.status === 'scheduled' && (
+                  <Btn variant="ghost" size="sm" onClick={() => onUpdateStatus(inv.invoiceNumber, 'pending')} title="Activate Now">
+                    ▶ Activate
                   </Btn>
                 )}
                 <Btn variant="ghost" size="sm" onClick={() => onPreview(inv)} title="Preview"><Icon name="eye" size={12} /></Btn>

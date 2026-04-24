@@ -144,7 +144,9 @@ export function prevYM(ym) {
  */
 export function createFinanceRecord(inv) {
   const fd = inv.financeData || {};
-  const paidAmount = Number(inv.payingNow) || 0;
+  // Pending invoices haven't been confirmed yet, so paidAmount starts at 0
+  const isPending = inv.status === 'pending';
+  const paidAmount = isPending ? 0 : (Number(inv.payingNow) || 0);
   const totalSalaries = Number(fd.totalSalaries) || 0;
   const allahShare = fd._allahManual
     ? Number(fd.allahShare) || 0
