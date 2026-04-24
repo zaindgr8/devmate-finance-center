@@ -228,94 +228,125 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 }
 
 /* ═══ REPORTS VIEW ═══ */
-export function ReportsView({ invoices, clients }) {
-  const months = {};
-  invoices.forEach((inv) => {
-    const m = inv.date ? inv.date.substring(0, 7) : 'N/A';
-    if (!months[m]) months[m] = { total: 0, paid: 0, count: 0 };
-    months[m].total += Number(inv.totalPayment) || 0;
-    if (inv.status !== 'pending') {
-      months[m].paid += Number(inv.payingNow) || 0;
-    }
-    months[m].count += 1;
+export function ReportsView({ invoices = [], clients = [], salaries = [] }) {
+  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
+
+  // Extract all available months from invoices and salaries
+  const allMonths = new Set();
+  invoices.forEach(inv => {
+    if (inv.date) allMonths.add(inv.date.substring(0, 7));
   });
-  const sorted = Object.entries(months).sort((a, b) => b[0].localeCompare(a[0]));
+  salaries.forEach(sal => {
+    if (sal.month) allMonths.add(sal.month.substring(0, 7));
+  });
+  const availableMonths = Array.from(allMonths).sort().reverse();
+  if (!availableMonths.includes(selectedMonth)) {
+    availableMonths.unshift(selectedMonth);
+  }
 
-  const statusC = { paid: 0, partial: 0, unpaid: 0, pending: 0 };
-  invoices.forEach((i) => { statusC[i.status || 'unpaid']++; });
+  // Filter Data
+  const monthInvoices = invoices.filter(inv => inv.date && inv.date.substring(0, 7) === selectedMonth);
+  const monthSalaries = salaries.filter(sal => sal.month && sal.month.substring(0, 7) === selectedMonth);
 
-  const topC = clients
-    .map((c) => {
-      const ci = invoices.filter((i) => i.clientName === c.name);
-      return { name: c.name, total: ci.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0), count: ci.length };
-    })
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 5);
-
-  const maxB = Math.max(...sorted.map(([, v]) => v.total), 1);
+  // Calculate Metrics
+  const totalInvoiced = monthInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayment) || 0), 0);
+  const totalReceived = monthInvoices.filter(inv => inv.status !== 'pending' && inv.status !== 'unpaid')
+    .reduce((sum, inv) => sum + (inv.status === 'paid' ? (Number(inv.totalPayment) || 0) : (Number(inv.payingNow) || 0)), 0);
+  const totalPending = Math.max(0, totalInvoiced - totalReceived);
+  
+  const totalSalaries = monthSalaries.reduce((sum, sal) => sum + (Number(sal.totalSalary) || 0), 0);
+  const expectedProfit = totalInvoiced - totalSalaries;
+  const netSavings = totalReceived - totalSalaries;
 
   return (
     <div className="animate-fade-in">
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 24 }}>Reports</h1>
-
-      <div className="stats-grid" style={{ display: 'flex', gap: 14, marginBottom: 24, flexWrap: 'wrap' }}>
-        <StatCard label="Paid Invoices" value={statusC.paid} accent="var(--success)" />
-        <StatCard label="Partially Paid" value={statusC.partial} accent="var(--warning)" />
-        <StatCard label="Unpaid" value={statusC.unpaid} accent="var(--primary)" />
-        <StatCard label="Pending Confirm" value={statusC.pending} accent="var(--info)" />
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Monthly Reports</h1>
+        <div>
+          <select 
+            value={selectedMonth} 
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            className="form-select"
+            style={{ width: 200, padding: '10px 14px', fontWeight: 600, fontSize: 14 }}
+          >
+            {availableMonths.map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
-      <div className="reports-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18, marginBottom: 20 }}>
-        {/* Monthly Revenue */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 24 }}>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Invoiced</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--primary)' }}>AED {totalInvoiced.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Received</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--success)' }}>AED {totalReceived.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Pending</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--warning)' }}>AED {totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Salaries</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#DC143C' }}>AED {totalSalaries.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 32 }}>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
+          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Expected Profit (Invoiced - Salaries)</div>
+          <div style={{ fontSize: 32, fontWeight: 700, color: expectedProfit >= 0 ? '#10b981' : '#ef4444' }}>
+            AED {expectedProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+          </div>
+        </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
+          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Net Profit / Savings (Received - Salaries)</div>
+          <div style={{ fontSize: 32, fontWeight: 700, color: netSavings >= 0 ? '#10b981' : '#ef4444' }}>
+            AED {netSavings.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
         <div className="card" style={{ padding: 24 }}>
-          <h3 className="section-title">Monthly Revenue</h3>
-          {sorted.length === 0 ? (
-            <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No data yet</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 className="section-title" style={{ margin: 0 }}>Invoices ({monthInvoices.length})</h3>
+          </div>
+          {monthInvoices.length === 0 ? (
+            <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No invoices generated this month</div>
           ) : (
-            sorted.map(([m, d]) => (
-              <div key={m} style={{ marginBottom: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-                  <span style={{ color: 'var(--text-light)' }}>{m}</span>
-                  <span style={{ fontWeight: 600 }}>
-                    AED {d.total.toLocaleString()}{' '}
-                    <span style={{ color: 'var(--text-light)', fontWeight: 400 }}>({d.count})</span>
-                  </span>
+            monthInvoices.map((inv) => (
+              <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border-light)' }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{inv.clientName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>
+                    <span style={{ color: inv.status === 'paid' ? 'var(--success)' : inv.status === 'partial' ? 'var(--warning)' : 'var(--danger)', fontWeight: 700, marginRight: 6 }}>{inv.status.toUpperCase()}</span>
+                    Inv #{inv.invoiceNumber}
+                  </div>
                 </div>
-                <div style={{ height: 6, background: 'var(--bg)', borderRadius: 3, overflow: 'hidden', border: '1px solid var(--border-light)' }}>
-                  <div style={{ height: '100%', width: `${(d.paid / Math.max(d.total, 1)) * 100}%`, background: 'var(--success)', borderRadius: 3 }} />
-                </div>
-                <div style={{ height: 6, background: 'var(--bg)', borderRadius: 3, overflow: 'hidden', marginTop: 3, border: '1px solid var(--border-light)' }}>
-                  <div style={{ height: '100%', width: `${(d.total / maxB) * 100}%`, background: 'var(--primary)', borderRadius: 3 }} />
-                </div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>AED {(Number(inv.totalPayment) || 0).toLocaleString()}</div>
               </div>
             ))
           )}
-          <div style={{ display: 'flex', gap: 16, marginTop: 10, fontSize: 10, color: 'var(--text-light)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 4, background: 'var(--success)', borderRadius: 2 }} /> Paid
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <div style={{ width: 10, height: 4, background: 'var(--primary)', borderRadius: 2 }} /> Total
-            </div>
-          </div>
         </div>
 
-        {/* Top Clients */}
         <div className="card" style={{ padding: 24 }}>
-          <h3 className="section-title">Top Clients</h3>
-          {topC.length === 0 ? (
-            <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No clients yet</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 className="section-title" style={{ margin: 0 }}>Salaries Allocated ({monthSalaries.length})</h3>
+          </div>
+          {monthSalaries.length === 0 ? (
+            <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No salaries allocated this month</div>
           ) : (
-            topC.map((c, i) => (
-              <div key={c.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: i < topC.length - 1 ? '1px solid var(--border-light)' : 'none' }}>
-                <div style={{ width: 28, height: 28, background: 'var(--primary-soft)', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--primary)' }}>
-                  {i + 1}
+            monthSalaries.map((sal) => (
+              <div key={sal.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border-light)' }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{sal.employeeName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{sal.projectName || 'N/A'} • {sal.salaryType === 'monthly' ? '🔄 Monthly' : '📦 Project'}</div>
                 </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-light)' }}>{c.count} invoice{c.count !== 1 ? 's' : ''}</div>
-                </div>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>AED {c.total.toLocaleString()}</div>
+                <div style={{ fontWeight: 700, fontSize: 14 }}>AED {(Number(sal.totalSalary) || 0).toLocaleString()}</div>
               </div>
             ))
           )}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Icon from './components/Icon';
 import Dashboard from './components/Dashboard';
 import InvoiceForm from './components/InvoiceForm';
@@ -7,9 +7,10 @@ import InvoicePreview from './components/InvoicePreview';
 import FinanceView from './components/FinanceView';
 import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
+import EmployeesView from './components/EmployeesView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
 import { today, createFinanceRecord, rolloverMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting } from './api';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -21,6 +22,7 @@ const VIEWS = {
   REPORTS: 'reports',
   FINANCE: 'finance',
   SALARIES: 'salaries',
+  EMPLOYEES: 'employees',
 };
 
 export default function App() {
@@ -29,6 +31,7 @@ export default function App() {
   const [clients, setClients] = useState([]);
   const [finance, setFinance] = useState([]);
   const [salaries, setSalaries] = useState([]);
+  const [employees, setEmployees] = useState([]);
   const [nextNum, setNextNum] = useState(4001);
   const [loading, setLoading] = useState(true);
   const [previewInv, setPreviewInv] = useState(null);
@@ -74,10 +77,43 @@ export default function App() {
         setInvoices(activatedInvoices);
         setClients(db.clients);
         setNextNum(db.nextNum);
-        setSalaries(db.salaries);
+        setEmployees(db.employees || []);
+
+        let currentSals = [...(db.salaries || [])];
+        const thisMonth = currentYM();
+        const newSalsToUpsert = [];
+
+        (db.employees || []).forEach(emp => {
+          if (emp.status !== 'active') return;
+          const empMonthlySals = currentSals.filter(s => s.employeeName === emp.name && s.salaryType === 'monthly');
+          
+          const projects = [...new Set(empMonthlySals.map(s => s.projectName))];
+          projects.forEach(proj => {
+            const projSals = empMonthlySals.filter(s => s.projectName === proj);
+            projSals.sort((a, b) => (b.month || '').localeCompare(a.month || ''));
+            const latest = projSals[0];
+            
+            if (latest.month && latest.month < thisMonth) {
+              const renewed = {
+                ...latest,
+                id: `sal-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                month: thisMonth,
+                paidAmount: 0,
+                status: 'unpaid',
+                createdAt: new Date().toISOString()
+              };
+              newSalsToUpsert.push(renewed);
+              currentSals.push(renewed);
+            }
+          });
+        });
+
+        if (newSalsToUpsert.length > 0) {
+          await upsertSalaries(newSalsToUpsert);
+        }
+        setSalaries(currentSals);
 
         let fin = db.finance;
-        const thisMonth = currentYM();
         const today1st = new Date().getDate() === 1;
         
         if (today1st && db.lastRollover !== thisMonth && fin.some((r) => r.month !== thisMonth)) {
@@ -141,6 +177,20 @@ export default function App() {
   const saveSalariesState = useCallback((v, salariesToUpsert) => {
     setSalaries(v);
     if (salariesToUpsert) upsertSalaries(Array.isArray(salariesToUpsert) ? salariesToUpsert : [salariesToUpsert]);
+  }, []);
+
+  const saveEmployees = useCallback(async (v, empToUpsert) => {
+    setEmployees(v);
+    if (empToUpsert) {
+      try { await upsertEmployee(empToUpsert); }
+      catch (err) { showToast('Failed to save employee to database!', 'error'); }
+    }
+  }, [showToast]);
+
+  const handleDeleteEmployee = useCallback((id) => {
+    setEmployees(prev => prev.filter(e => e.id !== id));
+    deleteEmployee(id);
+    showToast('Employee removed', 'error');
   }, []);
 
   // Client management
@@ -282,6 +332,26 @@ export default function App() {
     [invoices, finance, saveInvoices, saveFinanceState]
   );
 
+  // Merge standalone salary records into finance rows so Finance Ledger reflects them
+  const mergedFinance = useMemo(() => {
+    return finance.map(row => {
+      // find all standalone salaries linked to this invoice
+      const linked = salaries.filter(s => s.invoiceId === row.invoiceId && s.invoiceId);
+      if (linked.length === 0) return row;
+      const linkedTotal = linked.reduce((s, sal) => s + (Number(sal.totalSalary) || 0), 0);
+      // Build merged salaries array: original entries + linked standalone entries
+      const origSalaries = row.salaries || [];
+      const linkedEntries = linked.map(s => ({ employee: s.employeeName, amount: Number(s.totalSalary) || 0 }));
+      const mergedSalaries = [...origSalaries, ...linkedEntries];
+      const newTotalSalaries = (Number(row.totalSalaries) || 0) + linkedTotal;
+      const newAllahShare = row._allahManual
+        ? Number(row.allahShare)
+        : Math.max(0, ((Number(row.paidAmount) || 0) - newTotalSalaries) * 0.05);
+      const newProfit = (Number(row.paidAmount) || 0) - newTotalSalaries - newAllahShare - (Number(row.saving) || 0);
+      return { ...row, salaries: mergedSalaries, totalSalaries: newTotalSalaries, allahShare: newAllahShare, profit: newProfit };
+    });
+  }, [finance, salaries]);
+
   // Stats — only count confirmed (non-pending) invoices in received/outstanding
   const globalTotal = clients.reduce((sum, c) => {
     const ci = invoices.filter((i) => i.clientName === c.name);
@@ -294,14 +364,35 @@ export default function App() {
   const globalPending = Math.max(0, globalTotal - globalReceived);
 
   // Nav items
-  const nav = [
-    { id: VIEWS.DASHBOARD, label: 'Dashboard', icon: 'home' },
-    { id: VIEWS.CREATE, label: 'New Invoice', icon: 'plus' },
-    { id: VIEWS.HISTORY, label: 'Invoices', icon: 'file' },
-    { id: VIEWS.CLIENTS, label: 'Clients', icon: 'users' },
-    { id: VIEWS.FINANCE, label: 'Finance', icon: 'finance' },
-    { id: VIEWS.SALARIES, label: 'Salaries', icon: 'salaries' },
-    { id: VIEWS.REPORTS, label: 'Reports', icon: 'chart' },
+  const navGroups = [
+    {
+      title: 'MAIN',
+      items: [
+        { id: VIEWS.DASHBOARD, label: 'Dashboard', icon: 'home' },
+        { id: VIEWS.REPORTS, label: 'Reports', icon: 'chart' },
+      ]
+    },
+    {
+      title: 'INVOICES',
+      items: [
+        { id: VIEWS.CREATE, label: 'New Invoice', icon: 'plus' },
+        { id: VIEWS.HISTORY, label: 'Invoices', icon: 'file' },
+      ]
+    },
+    {
+      title: 'CLIENTS',
+      items: [
+        { id: VIEWS.CLIENTS, label: 'Clients', icon: 'users' },
+        { id: VIEWS.FINANCE, label: 'Finance', icon: 'finance' },
+      ]
+    },
+    {
+      title: 'EMPLOYEES',
+      items: [
+        { id: VIEWS.EMPLOYEES, label: 'Employees', icon: 'users' },
+        { id: VIEWS.SALARIES, label: 'Salaries', icon: 'salaries' },
+      ]
+    }
   ];
 
   // Auth Check
@@ -378,19 +469,26 @@ export default function App() {
           </div>
 
           <nav className="sidebar-nav">
-            {nav.map((n) => (
-              <button
-                key={n.id}
-                onClick={() => {
-                  setView(n.id);
-                  setEditInv(null);
-                  setMobileNav(false);
-                }}
-                className={`sidebar-nav-btn ${view === n.id ? 'active' : ''}`}
-              >
-                <Icon name={n.icon} size={16} />
-                {n.label}
-              </button>
+            {navGroups.map((group) => (
+              <div key={group.title} style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: 1.5, padding: '0 16px', marginBottom: 8 }}>
+                  {group.title}
+                </div>
+                {group.items.map((n) => (
+                  <button
+                    key={n.id}
+                    onClick={() => {
+                      setView(n.id);
+                      setEditInv(null);
+                      setMobileNav(false);
+                    }}
+                    className={`sidebar-nav-btn ${view === n.id ? 'active' : ''}`}
+                  >
+                    <Icon name={n.icon} size={16} />
+                    {n.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
 
@@ -450,6 +548,7 @@ export default function App() {
           {view === VIEWS.HISTORY && (
             <InvoiceHistory
               invoices={invoices}
+              salaries={salaries}
               searchQ={searchQ}
               setSearchQ={setSearchQ}
               clientFilter={clientFilter}
@@ -475,13 +574,14 @@ export default function App() {
           {view === VIEWS.PREVIEW && previewInv && (
             <InvoicePreview
               inv={previewInv}
+              salaries={salaries}
               onBack={() => setView(VIEWS.HISTORY)}
             />
           )}
 
           {view === VIEWS.FINANCE && (
             <FinanceView
-              finance={finance}
+              finance={mergedFinance}
               onUpdate={(id, patch) => {
                 const updatedItem = { ...finance.find(r => r.id === id), ...patch };
                 const updated = finance.map((r) => r.id === id ? updatedItem : r);
@@ -498,6 +598,9 @@ export default function App() {
           {view === VIEWS.SALARIES && (
             <SalariesView
               salaries={salaries}
+              invoices={invoices}
+              clients={clients}
+              employees={employees}
               onUpdate={(id, patch) => {
                 const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
                 const updated = salaries.map((r) => r.id === id ? updatedItem : r);
@@ -511,8 +614,30 @@ export default function App() {
             />
           )}
 
+          {view === VIEWS.EMPLOYEES && (
+            <EmployeesView
+              employees={employees}
+              salaries={salaries}
+              invoices={invoices}
+              clients={clients}
+              onAdd={(emp) => saveEmployees([emp, ...employees], emp)}
+              onUpdate={(id, emp) => saveEmployees(employees.map(e => e.id === id ? emp : e), emp)}
+              onDelete={handleDeleteEmployee}
+              onAddSalary={(row) => saveSalariesState([row, ...salaries], row)}
+              onUpdateSalary={(id, patch) => {
+                const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
+                const updated = salaries.map((r) => r.id === id ? updatedItem : r);
+                saveSalariesState(updated, updatedItem);
+              }}
+              onDeleteSalary={(id) => {
+                saveSalariesState(salaries.filter((r) => r.id !== id));
+                deleteSalary(id);
+              }}
+            />
+          )}
+
           {view === VIEWS.REPORTS && (
-            <ReportsView invoices={invoices} clients={clients} />
+            <ReportsView invoices={invoices} clients={clients} salaries={salaries} />
           )}
         </main>
       </div>

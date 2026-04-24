@@ -71,7 +71,7 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
       const schedTime = new Date(scheduledDate);
       if (schedTime <= new Date()) { alert('Scheduled date must be in the future.'); return; }
       const finRecord = { ...finData, salaries: finData.salaries.filter((e) => e.employee || e.amount), totalSalaries, allahShare, saving: Number(finData.saving) || 0 };
-      onSave({ ...form, totalPayment: total, remaining: Math.max(0, rem), status: 'scheduled', scheduledDate, financeData: finRecord });
+      onSave({ ...form, date: scheduledDate.split('T')[0], totalPayment: total, remaining: Math.max(0, rem), status: 'scheduled', scheduledDate, financeData: finRecord });
       return;
     }
     let st = 'unpaid';
@@ -192,7 +192,13 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
                 type="datetime-local"
                 className="form-input"
                 value={scheduledDate}
-                onChange={(e) => setScheduledDate(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setScheduledDate(val);
+                  if (val) {
+                    set('date', val.split('T')[0]);
+                  }
+                }}
                 min={new Date().toISOString().slice(0, 16)}
               />
               <div style={{ marginTop: 8, fontSize: 12, color: '#7c3aed', background: 'rgba(124,58,237,0.08)', borderRadius: 6, padding: '6px 12px' }}>

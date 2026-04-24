@@ -3,7 +3,7 @@ import Icon from './Icon';
 import { Badge, Btn } from './UI';
 import { fmtDate, fmtCurrency, generatePrintHTML } from '../utils/helpers';
 
-export default function InvoicePreview({ inv, onBack }) {
+export default function InvoicePreview({ inv, salaries = [], onBack }) {
   const handleDownloadPDF = () => {
     // Load html2pdf.js from CDN if not already loaded
     const load = () => new Promise((resolve) => {
@@ -128,6 +128,40 @@ export default function InvoicePreview({ inv, onBack }) {
               </div>
             </div>
           </div>
+
+          {/* Team & Salaries Panel */}
+          {(() => {
+            const linked = salaries.filter(s => s.invoiceId === inv.invoiceNumber);
+            if (linked.length === 0) return null;
+            const totalSal = linked.reduce((s, e) => s + (Number(e.totalSalary) || 0), 0);
+            const totalPaid = linked.reduce((s, e) => s + (Number(e.paidAmount) || 0), 0);
+            const statusColor = (st) => st === 'paid' ? '#0D9F5F' : st === 'partial' ? '#D97706' : '#DC143C';
+            return (
+              <div style={{ background: 'rgba(124,58,237,0.05)', border: '1.5px solid rgba(124,58,237,0.15)', borderRadius: 10, padding: '14px 18px', marginBottom: 18 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, color: '#7c3aed', marginBottom: 12 }}>👥 Team & Salaries</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: '6px 12px', fontSize: 11, color: 'var(--text-light)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6, paddingBottom: 6, borderBottom: '1px solid rgba(124,58,237,0.15)' }}>
+                  <span>Employee</span><span>Project</span><span style={{ textAlign: 'right' }}>Total</span><span style={{ textAlign: 'right' }}>Paid</span><span style={{ textAlign: 'center' }}>Status</span>
+                </div>
+                {linked.map(s => (
+                  <div key={s.id} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: '4px 12px', alignItems: 'center', padding: '5px 0', borderBottom: '1px solid var(--border-light)', fontSize: 13 }}>
+                    <span style={{ fontWeight: 600 }}>{s.employeeName}</span>
+                    <span style={{ color: 'var(--text-light)', fontSize: 12 }}>{s.projectName || '—'}</span>
+                    <span style={{ textAlign: 'right', fontWeight: 600 }}>AED {Number(s.totalSalary).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                    <span style={{ textAlign: 'right', color: '#0D9F5F', fontWeight: 600 }}>AED {Number(s.paidAmount).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                    <span style={{ textAlign: 'center' }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', background: s.status === 'paid' ? '#ECFDF3' : s.status === 'partial' ? '#FFFBEB' : '#FEF2F4', color: statusColor(s.status || 'unpaid'), borderRadius: 20, padding: '2px 8px' }}>
+                        {s.status || 'unpaid'}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 24, marginTop: 10, fontSize: 13, fontWeight: 700 }}>
+                  <span style={{ color: 'var(--text-light)' }}>Total Salaries: <span style={{ color: 'var(--warning)' }}>AED {totalSal.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></span>
+                  <span style={{ color: 'var(--text-light)' }}>Total Paid: <span style={{ color: '#0D9F5F' }}>AED {totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span></span>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Notes */}
           {inv.specialNotes && (

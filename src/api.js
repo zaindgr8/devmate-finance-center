@@ -28,13 +28,15 @@ export async function fetchAllData() {
     { data: invoices },
     { data: finance },
     { data: salaries },
-    { data: settings }
+    { data: settings },
+    { data: employees }
   ] = await Promise.all([
     supabase.from('clients').select('*').order('created_at', { ascending: false }),
     supabase.from('invoices').select('*').order('created_at', { ascending: false }),
     supabase.from('finance_ledger').select('*').order('created_at', { ascending: false }),
     supabase.from('salaries_ledger').select('*').order('created_at', { ascending: false }),
-    supabase.from('app_settings').select('*')
+    supabase.from('app_settings').select('*'),
+    supabase.from('employees').select('*').order('created_at', { ascending: false }),
   ]);
 
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
@@ -42,9 +44,16 @@ export async function fetchAllData() {
 
   return {
     clients: (clients || []).map(toCamel),
-    invoices: (invoices || []).map(toCamel),
+    invoices: (invoices || []).map(inv => {
+      const camelInv = toCamel(inv);
+      if (camelInv.financeRaw && camelInv.financeRaw.scheduled_date) {
+        camelInv.scheduledDate = camelInv.financeRaw.scheduled_date;
+      }
+      return camelInv;
+    }),
     finance: (finance || []).map(toCamel),
     salaries: (salaries || []).map(toCamel),
+    employees: (employees || []).map(toCamel),
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
     lastRollover: lastRolloverSet ? lastRolloverSet.value : null
   };
@@ -73,12 +82,21 @@ export async function upsertInvoice(invoice) {
     payload.finance_raw = payload.finance_data;
     delete payload.finance_data;
   }
+  // Store scheduled_date inside finance_raw to avoid schema issues if column is missing
+  if (payload.scheduled_date) {
+    payload.finance_raw = payload.finance_raw || {};
+    payload.finance_raw.scheduled_date = payload.scheduled_date;
+    delete payload.scheduled_date;
+  }
   // Ensure project_name is always explicitly set
   if (!('project_name' in payload)) {
     payload.project_name = invoice.projectName || '';
   }
   const { error } = await supabase.from('invoices').upsert(payload, { onConflict: 'invoice_number' });
-  if (error) console.error('Error upserting invoice:', error);
+  if (error) {
+    console.error('Error upserting invoice:', error);
+    throw error;
+  }
 }
 
 export async function deleteInvoice(invoiceNumber) {
@@ -113,4 +131,18 @@ export async function deleteSalary(id) {
 export async function updateSetting(key, value) {
   const { error } = await supabase.from('app_settings').upsert({ key, value: String(value) }, { onConflict: 'key' });
   if (error) console.error('Error updating setting:', error);
+}
+
+export async function upsertEmployee(employee) {
+  const payload = toSnake(employee);
+  const { error } = await supabase.from('employees').upsert(payload, { onConflict: 'id' });
+  if (error) {
+    console.error('Error upserting employee:', error);
+    throw error;
+  }
+}
+
+export async function deleteEmployee(id) {
+  const { error } = await supabase.from('employees').delete().eq('id', id);
+  if (error) console.error('Error deleting employee:', error);
 }

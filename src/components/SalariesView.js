@@ -10,7 +10,8 @@ const EMPTY_SALARY_ROW = {
   projectName: '',
   totalSalary: 0,
   paidAmount: 0,
-  status: 'unpaid'
+  status: 'unpaid',
+  salaryType: 'project'
 };
 
 function EditCell({ value, onSave, prefix = '', type = 'number', style = {} }) {
@@ -75,7 +76,160 @@ function StatusPill({ status }) {
   );
 }
 
-export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
+function InvoiceEditCell({ value, invoices = [], onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value || '');
+
+  useEffect(() => { setVal(value || ''); }, [value]);
+
+  if (editing) {
+    return (
+      <select
+        autoFocus
+        value={val}
+        onChange={(e) => {
+          setVal(e.target.value);
+          setEditing(false);
+          onSave(e.target.value);
+        }}
+        onBlur={() => setEditing(false)}
+        style={{ width: '100%', padding: '4px 8px', border: '1.5px solid var(--primary)', borderRadius: 6, fontSize: 13, fontFamily: 'Poppins, sans-serif' }}
+      >
+        <option value="">-- No Invoice --</option>
+        {invoices.map(inv => (
+          <option key={inv.invoiceNumber} value={inv.invoiceNumber}>
+            #{inv.invoiceNumber} - {inv.clientName}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <span onClick={() => setEditing(true)} title="Click to edit invoice" style={{ cursor: 'pointer', display: 'inline-block', borderBottom: '1px dashed var(--border)', fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
+      {value ? `From Inv #${value}` : 'Link Invoice +'}
+    </span>
+  );
+}
+
+function ProjectClientEditCell({ value, clients = [], onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [selectedClient, setSelectedClient] = useState('');
+
+  if (editing) {
+    const clientObj = clients.find(c => c.name === selectedClient);
+    const projects = clientObj ? clientObj.projects || [] : [];
+    
+    return (
+      <div style={{ position: 'absolute', zIndex: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, boxShadow: 'var(--shadow-md)', minWidth: 200, marginTop: 4 }}>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Client</div>
+          <select 
+            autoFocus
+            value={selectedClient} 
+            onChange={(e) => setSelectedClient(e.target.value)}
+            style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+          >
+            <option value="">-- Choose Client --</option>
+            {clients.map(c => (
+              <option key={c.name} value={c.name}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+        
+        {selectedClient && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Project</div>
+            <select 
+              onChange={(e) => {
+                const proj = e.target.value;
+                setEditing(false);
+                onSave(proj ? `${selectedClient} - ${proj}` : selectedClient);
+              }}
+              style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+            >
+              <option value="">-- Choose Project --</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.name}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div style={{ textAlign: 'right' }}>
+           <button onClick={() => setEditing(false)} style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--text-light)', cursor: 'pointer', padding: '4px 8px' }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <span
+      onClick={() => setEditing(true)}
+      title="Click to edit project"
+      style={{
+        cursor: 'pointer', display: 'inline-block', minWidth: 60,
+        padding: '2px 4px', borderRadius: 4,
+        borderBottom: '1px dashed var(--border)',
+        transition: 'background 0.15s',
+      }}
+      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-soft)'}
+      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+    >
+      {value || 'Assign Project +'}
+    </span>
+  );
+}
+
+function EmployeeEditCell({ value, employees = [], onSave }) {
+  const [editing, setEditing] = useState(false);
+
+  if (editing) {
+    const activeEmps = employees.filter(e => e.status === 'active' || !e.status);
+    return (
+      <div style={{ position: 'absolute', zIndex: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, boxShadow: 'var(--shadow-md)', minWidth: 200, marginTop: 4 }}>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Employee</div>
+          <select 
+            autoFocus
+            value={value || ''} 
+            onChange={(e) => {
+              setEditing(false);
+              onSave(e.target.value);
+            }}
+            style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
+          >
+            <option value="">-- Choose Employee --</option>
+            {activeEmps.map(e => (
+              <option key={e.id} value={e.name}>{e.name}</option>
+            ))}
+          </select>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+           <button onClick={() => setEditing(false)} style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--text-light)', cursor: 'pointer', padding: '4px 8px' }}>Cancel</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <span
+      onClick={() => setEditing(true)}
+      title="Click to select employee"
+      style={{
+        cursor: 'pointer', display: 'inline-block', minWidth: 80,
+        padding: '2px 4px', borderRadius: 4,
+        borderBottom: '1px dashed var(--border)',
+        transition: 'background 0.15s',
+      }}
+      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-soft)'}
+      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+    >
+      {value || 'Assign Employee +'}
+    </span>
+  );
+}
+
+export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete }) {
   const [showAddRow, setShowAddRow] = useState(false);
   const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: currentYM() });
 
@@ -88,19 +242,17 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
   }, [onUpdate]);
 
   const handleFieldSave = (row, field, rawVal) => {
-    const val = field === 'employeeName' || field === 'projectName' ? rawVal : Number(rawVal) || 0;
+    const stringFields = ['employeeName', 'projectName', 'invoiceId', 'salaryType', 'status', 'month'];
+    const val = stringFields.includes(field) ? rawVal : Number(rawVal) || 0;
     const updated = { ...row, [field]: val };
-    
+
     // Auto-update status based on paid vs total
-    const total = Number(updated.totalSalary) || 0;
-    const paid = Number(updated.paidAmount) || 0;
-    
-    if (paid >= total && total > 0) {
-      updated.status = 'paid';
-    } else if (paid > 0) {
-      updated.status = 'partial';
-    } else {
-      updated.status = 'unpaid';
+    if (field !== 'status') {
+      const total = Number(updated.totalSalary) || 0;
+      const paid = Number(updated.paidAmount) || 0;
+      if (paid >= total && total > 0) updated.status = 'paid';
+      else if (paid > 0) updated.status = 'partial';
+      else updated.status = 'unpaid';
     }
 
     updateRow(row.id, updated);
@@ -144,10 +296,62 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
       {showAddRow && (
         <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderRadius: 12, padding: 20, marginBottom: 24, boxShadow: 'var(--shadow-md)' }}>
           <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 14 }}>Add Custom Salary</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 16 }}>
+
+          {/* Employee quick-pick */}
+          {employees.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 8, fontWeight: 600 }}>👤 Pick from Employees</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {employees.filter(e => e.status === 'active' || !e.status).map(emp => (
+                  <button
+                    key={emp.id}
+                    type="button"
+                    onClick={() => setNewRow(r => ({
+                      ...r,
+                      employeeName: emp.name,
+                      totalSalary: Number(emp.baseSalary) || r.totalSalary,
+                      salaryType: emp.salaryType || 'monthly',
+                    }))}
+                    style={{
+                      padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'Poppins,sans-serif', transition: 'all 0.15s',
+                      border: newRow.employeeName === emp.name ? '2px solid var(--primary)' : '1.5px solid var(--border)',
+                      background: newRow.employeeName === emp.name ? 'var(--primary-soft)' : 'var(--card)',
+                      color: newRow.employeeName === emp.name ? 'var(--primary)' : 'var(--text-mid)',
+                    }}
+                  >
+                    {emp.name}
+                    {emp.baseSalary > 0 && <span style={{ fontWeight: 400, marginLeft: 6, color: 'var(--text-faint)', fontSize: 10 }}>AED {Number(emp.baseSalary).toLocaleString()}</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Employee Name</div>
+              <select
+                value={newRow.employeeName || ''}
+                onChange={(e) => {
+                  const name = e.target.value;
+                  const emp = employees.find(e => e.name === name);
+                  setNewRow((r) => ({
+                    ...r,
+                    employeeName: name,
+                  }));
+                }}
+                className="form-select"
+              >
+                <option value="">-- Select Employee --</option>
+                {employees.filter(e => e.status === 'active' || !e.status).map(e => (
+                  <option key={e.id} value={e.name}>{e.name}</option>
+                ))}
+              </select>
+            </div>
             {[
-              { label: 'Employee Name', key: 'employeeName', type: 'text' },
               { label: 'Project Name', key: 'projectName', type: 'text' },
+              { label: 'Invoice # (Optional)', key: 'invoiceId', type: 'text' },
               { label: 'Total Salary', key: 'totalSalary', type: 'number' },
               { label: 'Paid Amount', key: 'paidAmount', type: 'number' },
             ].map(({ label, key, type }) => (
@@ -155,12 +359,31 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
                 <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>{label}</div>
                 <input
                   type={type}
-                  value={newRow[key]}
+                  value={newRow[key] || ''}
                   onChange={(e) => setNewRow((r) => ({ ...r, [key]: type === 'number' ? Number(e.target.value) : e.target.value }))}
                   className="form-input"
                 />
               </div>
             ))}
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Salary Type</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                {[{ val: 'project', label: '📦 Project' }, { val: 'monthly', label: '🔄 Monthly' }].map(({ val, label }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setNewRow(r => ({ ...r, salaryType: val }))}
+                    style={{
+                      flex: 1, padding: '8px 6px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'Poppins,sans-serif', transition: 'all 0.15s',
+                      border: (newRow.salaryType || 'project') === val ? '2px solid var(--primary)' : '1.5px solid var(--border)',
+                      background: (newRow.salaryType || 'project') === val ? 'var(--primary-soft)' : 'var(--input-bg)',
+                      color: (newRow.salaryType || 'project') === val ? 'var(--primary)' : 'var(--text-mid)',
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+            </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Status</div>
               <select
@@ -208,6 +431,7 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
               <tr>
                 <th>Employee Name</th>
                 <th>Project / Client</th>
+                <th style={{ textAlign: 'center' }}>Type</th>
                 <th style={{ textAlign: 'right' }}>Total Salary</th>
                 <th style={{ textAlign: 'right' }}>Paid</th>
                 <th style={{ textAlign: 'right' }}>Remaining</th>
@@ -216,7 +440,11 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
               </tr>
             </thead>
             <tbody>
-              {salaries.map((row) => {
+              {[...salaries].sort((a, b) => {
+                if (a.salaryType === 'monthly' && b.salaryType !== 'monthly') return -1;
+                if (a.salaryType !== 'monthly' && b.salaryType === 'monthly') return 1;
+                return (b.month || '').localeCompare(a.month || '');
+              }).map((row) => {
                 const total = Number(row.totalSalary) || 0;
                 const paid = Number(row.paidAmount) || 0;
                 const remaining = Math.max(0, total - paid);
@@ -225,18 +453,31 @@ export default function SalariesView({ salaries, onUpdate, onAdd, onDelete }) {
                 
                 return (
                   <tr key={row.id} style={{ borderLeft: `3px solid ${rowBorder}` }}>
-                    <td>
+                    <td style={{ position: 'relative' }}>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>
-                        <EditCell value={row.employeeName} type="text" onSave={(v) => handleFieldSave(row, 'employeeName', v)} />
+                        <EmployeeEditCell value={row.employeeName} employees={employees} onSave={(v) => handleFieldSave(row, 'employeeName', v)} />
                       </div>
-                      {row.invoiceId && (
-                        <div style={{ fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>From Inv #{row.invoiceId}</div>
-                      )}
+                      <InvoiceEditCell value={row.invoiceId} invoices={invoices} onSave={(v) => handleFieldSave(row, 'invoiceId', v)} />
                     </td>
-                    <td>
+                    <td style={{ position: 'relative' }}>
                       <div style={{ color: 'var(--text-mid)', fontWeight: 500 }}>
-                        <EditCell value={row.projectName} type="text" onSave={(v) => handleFieldSave(row, 'projectName', v)} />
+                        <ProjectClientEditCell value={row.projectName} clients={clients} onSave={(v) => handleFieldSave(row, 'projectName', v)} />
                       </div>
+                    </td>
+                    <td style={{ textAlign: 'center' }}>
+                      <button
+                        onClick={() => handleFieldSave(row, 'salaryType', row.salaryType === 'monthly' ? 'project' : 'monthly')}
+                        title="Click to toggle type"
+                        style={{
+                          fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8,
+                          border: 'none', borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
+                          fontFamily: 'Poppins,sans-serif',
+                          background: row.salaryType === 'monthly' ? 'var(--info-soft)' : 'var(--border-light)',
+                          color: row.salaryType === 'monthly' ? 'var(--info)' : 'var(--text-mid)',
+                        }}
+                      >
+                        {row.salaryType === 'monthly' ? '🔄 Monthly' : '📦 Project'}
+                      </button>
                     </td>
                     <td style={{ textAlign: 'right', fontWeight: 600, fontSize: 14 }}>
                       <EditCell value={total} onSave={(v) => handleFieldSave(row, 'totalSalary', v)} prefix="AED " />
