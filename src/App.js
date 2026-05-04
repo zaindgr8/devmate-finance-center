@@ -37,6 +37,7 @@ export default function App() {
   const [salaries, setSalaries] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [bills, setBills] = useState([]);
+  const [billSections, setBillSections] = useState([]);
   const [personal, setPersonal] = useState({ allahPaid: 0, savedAmount: 0 });
   const [nextNum, setNextNum] = useState(4001);
   const [loading, setLoading] = useState(true);
@@ -85,6 +86,7 @@ export default function App() {
         setNextNum(db.nextNum);
         setEmployees(db.employees || []);
         setBills(db.bills || []);
+        setBillSections(db.billSections || []);
         if (db.personal) setPersonal(db.personal);
 
         let currentSals = [...(db.salaries || [])];
@@ -183,6 +185,12 @@ export default function App() {
     try { await saveMiscBills(v); }
     catch (err) { showToast('Failed to save bills!', 'error'); }
   }, [showToast]);
+
+  const saveBillSectionsState = useCallback(async (v) => {
+    setBillSections(v);
+    try { await updateSetting('misc_bill_sections', JSON.stringify(v)); }
+    catch (err) { console.error(err); }
+  }, []);
 
   const savePersonalState = useCallback(async (v) => {
     setPersonal(v);
@@ -668,6 +676,8 @@ export default function App() {
           {view === VIEWS.BILLS && (
             <BillsView
               bills={bills}
+              sections={billSections}
+              onUpdateSections={saveBillSectionsState}
               onAdd={(bill) => saveBills([bill, ...bills])}
               onUpdate={(id, patch) => {
                 const updated = bills.map(b => b.id === id ? { ...b, ...patch } : b);

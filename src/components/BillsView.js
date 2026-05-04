@@ -13,17 +13,6 @@ const DEFAULT_SECTIONS = [
   { id: 'one-time', label: '📌 One-Time Expense', color: '#f59e0b' },
 ];
 
-function loadSections() {
-  try {
-    const s = localStorage.getItem('misc_bill_sections');
-    return s ? JSON.parse(s) : DEFAULT_SECTIONS;
-  } catch { return DEFAULT_SECTIONS; }
-}
-
-function saveSections(sections) {
-  localStorage.setItem('misc_bill_sections', JSON.stringify(sections));
-}
-
 const EMPTY_FORM = { name: '', amount: '', paidAmount: '', type: 'monthly', category: 'Other', month: currentYM() };
 
 function getBillStatus(bill) {
@@ -34,12 +23,11 @@ function getBillStatus(bill) {
   return 'partial';
 }
 
-export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReorder }) {
+export default function BillsView({ bills = [], sections: propSections = [], onUpdateSections, onAdd, onUpdate, onDelete, onReorder }) {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [filterMonth, setFilterMonth] = useState(currentYM());
-  const [sections, setSections] = useState(loadSections);
   const [editSectionId, setEditSectionId] = useState(null);
   const [editSectionLabel, setEditSectionLabel] = useState('');
   const [showAddSection, setShowAddSection] = useState(false);
@@ -48,7 +36,23 @@ export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReo
   const [dragOverBillId, setDragOverBillId] = useState(null);
   const [dragSectionId, setDragSectionId] = useState(null);
 
-  const updateSections = (ns) => { setSections(ns); saveSections(ns); };
+  // If Supabase didn't have any sections, fall back to localStorage (migration step), or defaults
+  let activeSections = propSections;
+  if (!activeSections || activeSections.length === 0) {
+    try {
+      const s = localStorage.getItem('misc_bill_sections');
+      activeSections = s ? JSON.parse(s) : DEFAULT_SECTIONS;
+      // Auto-migrate to Supabase on first load if missing
+      if (onUpdateSections) onUpdateSections(activeSections);
+    } catch { 
+      activeSections = DEFAULT_SECTIONS; 
+    }
+  }
+
+  const updateSections = (ns) => { 
+    if (onUpdateSections) onUpdateSections(ns); 
+    try { localStorage.setItem('misc_bill_sections', JSON.stringify(ns)); } catch(e){} // keep local updated just in case
+  };
 
   const allMonths = [...new Set([currentYM(), ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month)])].sort().reverse();
 
@@ -61,7 +65,7 @@ export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReo
 
   const monthlyTotal = bills.filter(b => b.type === 'monthly').reduce((s, b) => s + (Number(b.amount) || 0), 0);
   const oneTimeTotal = bills.filter(b => b.type === 'one-time' && b.month === filterMonth).reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const customTotal = sections.filter(s => !['monthly', 'one-time'].includes(s.id)).reduce((sum, s) => sum + bills.filter(b => b.type === s.id).reduce((ss, b) => ss + (Number(b.amount) || 0), 0), 0);
+  const customTotal = activeSections.filter(s => !['monthly', 'one-time'].includes(s.id)).reduce((sum, s) => sum + bills.filter(b => b.type === s.id).reduce((ss, b) => ss + (Number(b.amount) || 0), 0), 0);
   const totalThisMonth = monthlyTotal + oneTimeTotal + customTotal;
 
   const visibleBills = [
@@ -127,17 +131,17 @@ export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReo
   // Section edit
   const startEditSection = (sec) => { setEditSectionId(sec.id); setEditSectionLabel(sec.label); };
   const saveEditSection = () => {
-    if (editSectionLabel.trim()) updateSections(sections.map(s => s.id === editSectionId ? { ...s, label: editSectionLabel.trim() } : s));
+    if (editSectionLabel.trim()) updateSections(activeSections.map(s => s.id === editSectionId ? { ...s, label: editSectionLabel.trim() } : s));
     setEditSectionId(null);
   };
   const handleAddSection = () => {
     if (!newSectionLabel.trim()) return;
-    updateSections([...sections, { id: `custom-${Date.now()}`, label: newSectionLabel.trim(), color: '#6366f1' }]);
+    updateSections([...activeSections, { id: `custom-${Date.now()}`, label: newSectionLabel.trim(), color: '#6366f1' }]);
     setNewSectionLabel(''); setShowAddSection(false);
   };
   const handleDeleteSection = (sectionId) => {
     if (['monthly', 'one-time'].includes(sectionId)) return;
-    if (window.confirm('Delete this section? Bills in it won\'t be lost.')) updateSections(sections.filter(s => s.id !== sectionId));
+    if (window.confirm('Delete this section? Bills in it won\'t be lost.')) updateSections(activeSections.filter(s => s.id !== sectionId));
   };
 
   const statusBadge = (bill) => {
@@ -209,7 +213,7 @@ export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReo
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Section</div>
               <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                {sections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+                {activeSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
               </select>
             </div>
             <div>
@@ -244,7 +248,7 @@ export default function BillsView({ bills = [], onAdd, onUpdate, onDelete, onReo
       )}
 
       {/* Sections */}
-      {sections.map(section => {
+      {activeSections.map(section => {
         const items = getBillsForSection(section.id);
         return (
           <div key={section.id} style={{ marginBottom: 24 }}

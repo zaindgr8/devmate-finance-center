@@ -46,6 +46,12 @@ export async function fetchAllData() {
     billsData = miscBillsSet ? JSON.parse(miscBillsSet.value || '[]') : [];
   } catch (_) { billsData = []; }
 
+  const billSectionsSet = (settings || []).find(s => s.key === 'misc_bill_sections');
+  let sectionsData = [];
+  try {
+    sectionsData = billSectionsSet ? JSON.parse(billSectionsSet.value || '[]') : [];
+  } catch (_) { sectionsData = []; }
+
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
   const lastRolloverSet = (settings || []).find(s => s.key === 'last_rollover');
 
@@ -68,6 +74,7 @@ export async function fetchAllData() {
     salaries: (salaries || []).map(toCamel).sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999)),
     employees: (employees || []).map(toCamel),
     bills: billsData.map(toCamel),
+    billSections: sectionsData,
     personal: personalData,
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
     lastRollover: lastRolloverSet ? lastRolloverSet.value : null
