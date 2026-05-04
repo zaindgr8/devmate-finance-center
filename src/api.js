@@ -58,7 +58,7 @@ export async function fetchAllData() {
   const personalPaymentsSet = (settings || []).find(s => s.key === 'personal_payments');
   let personalData = { allahPaid: 0, savedAmount: 0 };
   try {
-    personalData = personalPaymentsSet ? JSON.parse(personalPaymentsSet.value || '{}') : { allahPaid: 0, savedAmount: 0 };
+    personalData = personalPaymentsSet ? toCamel(JSON.parse(personalPaymentsSet.value || '{}')) : { allahPaid: 0, savedAmount: 0 };
   } catch (_) { personalData = { allahPaid: 0, savedAmount: 0 }; }
 
   return {
