@@ -1,4 +1,11 @@
 import React, { useState, useCallback, useEffect } from 'react';
+import { nextYM } from '../utils/helpers';
+
+function fmtMonth(ym) {
+  const [y, m] = ym.split('-');
+  return new Date(Number(y), Number(m) - 1, 1)
+    .toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
 
 function currentYM() {
   const d = new Date();
@@ -229,12 +236,18 @@ function EmployeeEditCell({ value, employees = [], onSave }) {
   );
 }
 
-export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete }) {
+export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete, onReorder, onPushToNextMonth }) {
+  const months = [...new Set(salaries.map((s) => s.month))].sort((a, b) => b.localeCompare(a));
+  const [activeMonth, setActiveMonth] = useState(months[0] || currentYM());
   const [showAddRow, setShowAddRow] = useState(false);
-  const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: currentYM() });
+  const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: activeMonth });
+  const [dragId, setDragId] = useState(null);
+  const [dragOverId, setDragOverId] = useState(null);
 
-  const totalPool = salaries.reduce((sum, s) => sum + (Number(s.totalSalary) || 0), 0);
-  const totalPaid = salaries.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
+  const rows = salaries.filter((s) => s.month === activeMonth);
+
+  const totalPool = rows.reduce((sum, s) => sum + (Number(s.totalSalary) || 0), 0);
+  const totalPaid = rows.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
   const totalRemaining = totalPool - totalPaid;
 
   const updateRow = useCallback((id, patch) => {
@@ -246,7 +259,6 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
     const val = stringFields.includes(field) ? rawVal : Number(rawVal) || 0;
     const updated = { ...row, [field]: val };
 
-    // Auto-update status based on paid vs total
     if (field !== 'status') {
       const total = Number(updated.totalSalary) || 0;
       const paid = Number(updated.paidAmount) || 0;
@@ -258,16 +270,83 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
     updateRow(row.id, updated);
   };
 
+  const handleDragStart = (e, id) => {
+    setDragId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, id) => {
+    e.preventDefault();
+    if (id !== dragId) setDragOverId(id);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (!dragId || !dragOverId || dragId === dragOverId) {
+      setDragId(null); setDragOverId(null); return;
+    }
+
+    const fromIdx = salaries.findIndex(s => s.id === dragId);
+    const toIdx = salaries.findIndex(s => s.id === dragOverId);
+    
+    if (fromIdx === -1 || toIdx === -1) {
+      setDragId(null); setDragOverId(null); return;
+    }
+
+    const newSalaries = [...salaries];
+    const [moved] = newSalaries.splice(fromIdx, 1);
+    newSalaries.splice(toIdx, 0, moved);
+
+    // Assign new display order to all items
+    const reordered = newSalaries.map((s, idx) => ({ ...s, displayOrder: idx }));
+
+    if (onReorder) onReorder(reordered);
+    setDragId(null); setDragOverId(null);
+  };
+
+  const handlePushNextMonth = (row) => {
+    if (row.status === 'paid') {
+      alert('This salary is already fully paid!');
+      return;
+    }
+    
+    const next = nextYM(row.month);
+    const total = Number(row.totalSalary) || 0;
+    const paid = Number(row.paidAmount) || 0;
+    const remaining = Math.max(0, total - paid);
+
+    if (paid > 0) {
+      // Split the record
+      const updatedCurrentRow = { ...row, status: 'pushed' };
+      const newNextMonthRow = {
+        ...row,
+        id: `sal-manual-push-${row.id}-${Date.now()}`,
+        month: next,
+        totalSalary: remaining,
+        paidAmount: 0,
+        status: 'unpaid',
+        rolledOver: true,
+        originalMonth: row.originalMonth || row.month,
+        createdAt: new Date().toISOString()
+      };
+      
+      onPushToNextMonth(updatedCurrentRow, newNextMonthRow);
+    } else {
+      // Completely unpaid, just move it
+      const updatedCurrentRow = { ...row, month: next, rolledOver: true };
+      onPushToNextMonth(updatedCurrentRow, null);
+    }
+  };
+
   return (
     <div className="animate-fade-in">
-      {/* Page header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 2 }}>Salaries Tracker</h1>
           <div style={{ fontSize: 12, color: 'var(--text-light)' }}>Track individual employee payouts and balances cross-project</div>
         </div>
         <button
-          onClick={() => { setNewRow({ ...EMPTY_SALARY_ROW, month: currentYM() }); setShowAddRow(true); }}
+          onClick={() => { setNewRow({ ...EMPTY_SALARY_ROW, month: activeMonth }); setShowAddRow(true); }}
           style={{
             background: 'var(--primary)', color: '#fff', border: 'none',
             borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600,
@@ -278,7 +357,18 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
         </button>
       </div>
 
-      {/* Summary bar */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 20 }}>
+        {(months.length === 0 ? [currentYM()] : months).map((m) => (
+          <button
+            key={m}
+            onClick={() => setActiveMonth(m)}
+            className={`month-tab ${activeMonth === m ? 'month-tab-active' : ''}`}
+          >
+            {fmtMonth(m)}
+          </button>
+        ))}
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
         {[
           { label: 'Total Salary Pool', val: totalPool, color: 'var(--text)' },
@@ -292,12 +382,10 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
         ))}
       </div>
 
-      {/* Manual add row form */}
       {showAddRow && (
         <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderRadius: 12, padding: 20, marginBottom: 24, boxShadow: 'var(--shadow-md)' }}>
           <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 14 }}>Add Custom Salary</div>
 
-          {/* Employee quick-pick */}
           {employees.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 8, fontWeight: 600 }}>👤 Pick from Employees</div>
@@ -335,7 +423,6 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
                 value={newRow.employeeName || ''}
                 onChange={(e) => {
                   const name = e.target.value;
-                  const emp = employees.find(e => e.name === name);
                   setNewRow((r) => ({
                     ...r,
                     employeeName: name,
@@ -417,18 +504,18 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
         </div>
       )}
 
-      {/* Table */}
-      {salaries.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-light)' }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>💼</div>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>No salary records available</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>No salary records for {fmtMonth(activeMonth)}</div>
           <div style={{ fontSize: 13 }}>Create invoices or add a custom salary to get started.</div>
         </div>
       ) : (
         <div className="finance-table-wrap">
-          <table className="finance-table">
+          <table className="finance-table" onDragOver={e => e.preventDefault()} onDrop={handleDrop}>
             <thead>
               <tr>
+                <th style={{ width: 40 }}></th>
                 <th>Employee Name</th>
                 <th>Project / Client</th>
                 <th style={{ textAlign: 'center' }}>Type</th>
@@ -440,23 +527,38 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
               </tr>
             </thead>
             <tbody>
-              {[...salaries].sort((a, b) => {
-                if (a.salaryType === 'monthly' && b.salaryType !== 'monthly') return -1;
-                if (a.salaryType !== 'monthly' && b.salaryType === 'monthly') return 1;
-                return (b.month || '').localeCompare(a.month || '');
-              }).map((row) => {
+              {rows.map((row) => {
                 const total = Number(row.totalSalary) || 0;
                 const paid = Number(row.paidAmount) || 0;
                 const remaining = Math.max(0, total - paid);
                 const rowStatus = row.status || 'unpaid';
                 const rowBorder = rowStatus === 'paid' ? '#0D9F5F' : rowStatus === 'partial' ? '#D97706' : '#DC143C';
+                const isDragTarget = dragOverId === row.id && dragId !== row.id;
                 
                 return (
-                  <tr key={row.id} style={{ borderLeft: `3px solid ${rowBorder}` }}>
+                  <tr 
+                    key={row.id} 
+                    draggable
+                    onDragStart={e => handleDragStart(e, row.id)}
+                    onDragOver={e => handleDragOver(e, row.id)}
+                    onDragEnd={() => { setDragId(null); setDragOverId(null); }}
+                    style={{ 
+                      borderLeft: `3px solid ${rowBorder}`,
+                      opacity: dragId === row.id ? 0.45 : 1,
+                      borderTop: isDragTarget ? '2px solid var(--primary)' : 'none',
+                      cursor: 'grab'
+                    }}
+                  >
+                    <td style={{ color: 'var(--text-faint)', fontSize: 16, textAlign: 'center', cursor: 'grab', userSelect: 'none' }}>⠿</td>
                     <td style={{ position: 'relative' }}>
                       <div style={{ fontWeight: 600, fontSize: 14 }}>
                         <EmployeeEditCell value={row.employeeName} employees={employees} onSave={(v) => handleFieldSave(row, 'employeeName', v)} />
                       </div>
+                      {row.rolledOver && (
+                        <span style={{ fontSize: 10, color: 'var(--info)', background: 'var(--info-soft)', borderRadius: 4, padding: '1px 6px', marginTop: 2, display: 'inline-block' }}>
+                          ↩ carried over
+                        </span>
+                      )}
                       <InvoiceEditCell value={row.invoiceId} invoices={invoices} onSave={(v) => handleFieldSave(row, 'invoiceId', v)} />
                     </td>
                     <td style={{ position: 'relative' }}>
@@ -489,9 +591,18 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
                       AED {remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td style={{ textAlign: 'center' }}>
-                      <StatusPill status={rowStatus} />
+                      <StatusPill status={rowStatus === 'pushed' ? 'paid' : rowStatus} />
                     </td>
-                    <td style={{ textAlign: 'right' }}>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
+                        <button
+                          onClick={() => handlePushNextMonth(row)}
+                          style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '4px 8px', fontSize: 13, fontWeight: 600, marginRight: 8, fontFamily: 'Poppins, sans-serif' }}
+                          title="Push to Next Month"
+                        >
+                          Push ⏭️
+                        </button>
+                      )}
                       <button
                         onClick={() => { if (window.confirm('Delete this salary record?')) onDelete(row.id); }}
                         style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: 4, fontSize: 18, lineHeight: 1 }}
@@ -508,9 +619,9 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
         </div>
       )}
 
-      {salaries.length > 0 && (
+      {rows.length > 0 && (
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-faint)', textAlign: 'right' }}>
-          💡 Click any value to edit inline.
+          💡 Click any value to edit inline. Drag ⠿ to reorder.
         </div>
       )}
     </div>

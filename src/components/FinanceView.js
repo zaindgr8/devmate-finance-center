@@ -214,8 +214,6 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
           { label: 'Total Invoiced', val: sum.total, color: 'var(--text)' },
           { label: 'Total Received', val: sum.paid, color: 'var(--info)' },
           { label: 'Salaries', val: sum.salaries, color: 'var(--warning)' },
-          { label: "Allah's Share", val: sum.allah, color: '#8B5CF6' },
-          { label: 'Saving', val: sum.saving, color: 'var(--success)' },
           { label: 'Net Profit', val: sum.profit, color: sum.profit >= 0 ? 'var(--success)' : 'var(--primary)' },
         ].map(({ label, val, color }) => (
           <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '14px 16px', boxShadow: 'var(--shadow)' }}>
@@ -247,21 +245,7 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
               </div>
             ))}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 14 }}>
-            {[
-              { label: "Allah's Share (5%)", key: 'allahShare', type: 'number' },
-              { label: 'Saving', key: 'saving', type: 'number' },
-            ].map(({ label, key, type }) => (
-              <div key={key}>
-                <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>{label}</div>
-                <input
-                  type={type}
-                  value={newRow[key]}
-                  onChange={(e) => setNewRow((r) => ({ ...r, [key]: Number(e.target.value) }))}
-                  className="form-input"
-                />
-              </div>
-            ))}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 14 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Payment Type</div>
               <select
@@ -319,7 +303,7 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
           <table className="finance-table">
             <thead>
               <tr>
-                {['Client', 'Type', 'Total', 'Received', 'Salaries', 'Allah Share', 'Saving', 'Profit', 'Status', ''].map((h) => (
+                {['Client', 'Type', 'Total', 'Received', 'Salaries', 'Profit', 'Status', ''].map((h) => (
                   <th key={h}>{h}</th>
                 ))}
               </tr>
@@ -371,12 +355,6 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
                         <EditCell value={Number(row.totalSalaries) || 0} onSave={(v) => handleFieldSave(row, 'totalSalaries', v)} prefix="AED " />
                       )}
                     </td>
-                    <td style={{ color: '#8B5CF6', fontWeight: 600 }}>
-                      <EditCell value={Number(row.allahShare) || 0} onSave={(v) => handleAllahSave(row, v)} prefix="AED " />
-                    </td>
-                    <td style={{ color: 'var(--success)', fontWeight: 600 }}>
-                      <EditCell value={Number(row.saving) || 0} onSave={(v) => handleFieldSave(row, 'saving', v)} prefix="AED " />
-                    </td>
                     <td style={{ fontWeight: 700, color: calcProfit(row) >= 0 ? 'var(--success)' : 'var(--primary)' }}>
                       AED {calcProfit(row).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
@@ -400,7 +378,7 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
 
       {rows.length > 0 && (
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-faint)', textAlign: 'right' }}>
-          💡 Click any value to edit inline. Allah Share auto-calculates at 5% of (Received − Salaries).
+          💡 Click any value to edit inline.
         </div>
       )}
     </div>

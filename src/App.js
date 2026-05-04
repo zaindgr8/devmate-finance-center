@@ -8,9 +8,11 @@ import FinanceView from './components/FinanceView';
 import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
 import EmployeesView from './components/EmployeesView';
+import BillsView from './components/BillsView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
-import { today, createFinanceRecord, rolloverMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee } from './api';
+import PersonalView from './components/PersonalView';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -23,6 +25,8 @@ const VIEWS = {
   FINANCE: 'finance',
   SALARIES: 'salaries',
   EMPLOYEES: 'employees',
+  BILLS: 'bills',
+  PERSONAL: 'personal',
 };
 
 export default function App() {
@@ -32,6 +36,8 @@ export default function App() {
   const [finance, setFinance] = useState([]);
   const [salaries, setSalaries] = useState([]);
   const [employees, setEmployees] = useState([]);
+  const [bills, setBills] = useState([]);
+  const [personal, setPersonal] = useState({ allahPaid: 0, savedAmount: 0 });
   const [nextNum, setNextNum] = useState(4001);
   const [loading, setLoading] = useState(true);
   const [previewInv, setPreviewInv] = useState(null);
@@ -78,50 +84,35 @@ export default function App() {
         setClients(db.clients);
         setNextNum(db.nextNum);
         setEmployees(db.employees || []);
+        setBills(db.bills || []);
+        if (db.personal) setPersonal(db.personal);
 
         let currentSals = [...(db.salaries || [])];
+        let fin = db.finance || [];
         const thisMonth = currentYM();
-        const newSalsToUpsert = [];
 
-        (db.employees || []).forEach(emp => {
-          if (emp.status !== 'active') return;
-          const empMonthlySals = currentSals.filter(s => s.employeeName === emp.name && s.salaryType === 'monthly');
-          
-          const projects = [...new Set(empMonthlySals.map(s => s.projectName))];
-          projects.forEach(proj => {
-            const projSals = empMonthlySals.filter(s => s.projectName === proj);
-            projSals.sort((a, b) => (b.month || '').localeCompare(a.month || ''));
-            const latest = projSals[0];
-            
-            if (latest.month && latest.month < thisMonth) {
-              const renewed = {
-                ...latest,
-                id: `sal-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-                month: thisMonth,
-                paidAmount: 0,
-                status: 'unpaid',
-                createdAt: new Date().toISOString()
-              };
-              newSalsToUpsert.push(renewed);
-              currentSals.push(renewed);
-            }
-          });
-        });
+        if (db.lastRollover !== thisMonth) {
+          let finRolled = false;
+          let salRolled = false;
 
-        if (newSalsToUpsert.length > 0) {
-          await upsertSalaries(newSalsToUpsert);
+          if (fin.length > 0 && fin.some((r) => r.month !== thisMonth)) {
+            fin = rolloverMonth(fin, thisMonth);
+            await upsertFinance(fin);
+            finRolled = true;
+          }
+
+          if (currentSals.length > 0 && currentSals.some((r) => r.month !== thisMonth)) {
+            currentSals = rolloverSalariesMonth(currentSals, thisMonth);
+            await upsertSalaries(currentSals);
+            salRolled = true;
+          }
+
+          if (finRolled || salRolled || !db.lastRollover) {
+            await updateSetting('last_rollover', thisMonth);
+          }
         }
+
         setSalaries(currentSals);
-
-        let fin = db.finance;
-        const today1st = new Date().getDate() === 1;
-        
-        if (today1st && db.lastRollover !== thisMonth && fin.some((r) => r.month !== thisMonth)) {
-          fin = rolloverMonth(fin, thisMonth);
-          await upsertFinance(fin);
-          await updateSetting('last_rollover', thisMonth);
-        }
-        
         setFinance(fin);
         setDbStatus('connected');
       } catch (err) {
@@ -186,6 +177,27 @@ export default function App() {
       catch (err) { showToast('Failed to save employee to database!', 'error'); }
     }
   }, [showToast]);
+
+  const saveBills = useCallback(async (v) => {
+    setBills(v);
+    try { await saveMiscBills(v); }
+    catch (err) { showToast('Failed to save bills!', 'error'); }
+  }, [showToast]);
+
+  const savePersonalState = useCallback(async (v) => {
+    setPersonal(v);
+    try { await savePersonalPayments(v); }
+    catch (err) { showToast('Failed to save personal payments!', 'error'); }
+  }, [showToast]);
+
+  const handleDeleteBill = useCallback((id) => {
+    setBills(prev => {
+      const updated = prev.filter(b => b.id !== id);
+      saveMiscBills(updated);
+      return updated;
+    });
+    showToast('Bill removed', 'error');
+  }, []);
 
   const handleDeleteEmployee = useCallback((id) => {
     setEmployees(prev => prev.filter(e => e.id !== id));
@@ -391,6 +403,13 @@ export default function App() {
       items: [
         { id: VIEWS.EMPLOYEES, label: 'Employees', icon: 'users' },
         { id: VIEWS.SALARIES, label: 'Salaries', icon: 'salaries' },
+      ]
+    },
+    {
+      title: 'MISC PAYMENTS',
+      items: [
+        { id: VIEWS.BILLS, label: 'Regular Bills', icon: 'receipt' },
+        { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' },
       ]
     }
   ];
@@ -611,6 +630,12 @@ export default function App() {
                 saveSalariesState(salaries.filter((r) => r.id !== id));
                 deleteSalary(id);
               }}
+              onReorder={(v) => saveSalariesState(v, v)}
+              onPushToNextMonth={(updatedRow, newRow) => {
+                const updatedList = salaries.map((r) => r.id === updatedRow.id ? updatedRow : r);
+                if (newRow) updatedList.unshift(newRow);
+                saveSalariesState(updatedList, newRow ? [updatedRow, newRow] : [updatedRow]);
+              }}
             />
           )}
 
@@ -637,7 +662,28 @@ export default function App() {
           )}
 
           {view === VIEWS.REPORTS && (
-            <ReportsView invoices={invoices} clients={clients} salaries={salaries} />
+            <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} />
+          )}
+
+          {view === VIEWS.BILLS && (
+            <BillsView
+              bills={bills}
+              onAdd={(bill) => saveBills([bill, ...bills])}
+              onUpdate={(id, patch) => {
+                const updated = bills.map(b => b.id === id ? { ...b, ...patch } : b);
+                saveBills(updated);
+              }}
+              onDelete={handleDeleteBill}
+              onReorder={(updatedBills) => saveBills(updatedBills)}
+            />
+          )}
+
+          {view === VIEWS.PERSONAL && (
+            <PersonalView
+              finance={finance}
+              personal={personal}
+              onUpdatePersonal={savePersonalState}
+            />
           )}
         </main>
       </div>

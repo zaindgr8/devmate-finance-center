@@ -3,8 +3,9 @@
 -- Run this in your Supabase SQL Editor
 -- =====================================================
 
--- Add salary_type column to existing salaries_ledger table
+-- Add columns for reordering and type to existing salaries_ledger table
 ALTER TABLE salaries_ledger ADD COLUMN IF NOT EXISTS salary_type TEXT DEFAULT 'project';
+ALTER TABLE salaries_ledger ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0;
 
 -- Ensure the employees table exists (in case the previous migration wasn't run)
 CREATE TABLE IF NOT EXISTS employees (

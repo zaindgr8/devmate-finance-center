@@ -29,7 +29,7 @@ export async function fetchAllData() {
     { data: finance },
     { data: salaries },
     { data: settings },
-    { data: employees }
+    { data: employees },
   ] = await Promise.all([
     supabase.from('clients').select('*').order('created_at', { ascending: false }),
     supabase.from('invoices').select('*').order('created_at', { ascending: false }),
@@ -39,8 +39,21 @@ export async function fetchAllData() {
     supabase.from('employees').select('*').order('created_at', { ascending: false }),
   ]);
 
+  // Fetch bills separately so a missing table doesn't break the whole load
+  const miscBillsSet = (settings || []).find(s => s.key === 'misc_bills');
+  let billsData = [];
+  try {
+    billsData = miscBillsSet ? JSON.parse(miscBillsSet.value || '[]') : [];
+  } catch (_) { billsData = []; }
+
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
   const lastRolloverSet = (settings || []).find(s => s.key === 'last_rollover');
+
+  const personalPaymentsSet = (settings || []).find(s => s.key === 'personal_payments');
+  let personalData = { allahPaid: 0, savedAmount: 0 };
+  try {
+    personalData = personalPaymentsSet ? JSON.parse(personalPaymentsSet.value || '{}') : { allahPaid: 0, savedAmount: 0 };
+  } catch (_) { personalData = { allahPaid: 0, savedAmount: 0 }; }
 
   return {
     clients: (clients || []).map(toCamel),
@@ -52,8 +65,10 @@ export async function fetchAllData() {
       return camelInv;
     }),
     finance: (finance || []).map(toCamel),
-    salaries: (salaries || []).map(toCamel),
+    salaries: (salaries || []).map(toCamel).sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999)),
     employees: (employees || []).map(toCamel),
+    bills: billsData.map(toCamel),
+    personal: personalData,
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
     lastRollover: lastRolloverSet ? lastRolloverSet.value : null
   };
@@ -145,4 +160,22 @@ export async function upsertEmployee(employee) {
 export async function deleteEmployee(id) {
   const { error } = await supabase.from('employees').delete().eq('id', id);
   if (error) console.error('Error deleting employee:', error);
+}
+
+// Save entire bills array to app_settings as JSON (no separate table needed)
+export async function saveMiscBills(bills) {
+  const value = JSON.stringify(bills.map(toSnake));
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'misc_bills', value }, { onConflict: 'key' });
+  if (error) console.error('Error saving misc bills:', error);
+}
+
+// Save personal payments (Allah Share & Savings) to app_settings
+export async function savePersonalPayments(personalObj) {
+  const value = JSON.stringify(toSnake(personalObj));
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'personal_payments', value }, { onConflict: 'key' });
+  if (error) console.error('Error saving personal payments:', error);
 }

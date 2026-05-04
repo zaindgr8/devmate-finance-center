@@ -35,7 +35,9 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
   // Projects/Salaries states for the inline modal
   const [showAddSal, setShowAddSal] = useState(false);
   const [editSalId, setEditSalId] = useState(null);
-  const [newSal, setNewSal] = useState({ projectName: '', salaryType: 'project', totalSalary: '', status: 'unpaid', notes: '' });
+  const [newSal, setNewSal] = useState({ projectName: '', salaryType: 'project', totalSalary: '', paidAmount: '', status: 'unpaid', notes: '' });
+  const [quickPayEmpId, setQuickPayEmpId] = useState(null);
+  const [quickPayAmount, setQuickPayAmount] = useState('');
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -70,26 +72,40 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
     if (!newSal.totalSalary) { alert('Amount is required.'); return; }
     
     if (editSalId) {
+      const total = Number(newSal.totalSalary) || 0;
+      const paid = Number(newSal.paidAmount) || 0;
+      let newStatus = newSal.status;
+      if (paid >= total && total > 0) newStatus = 'paid';
+      else if (paid > 0 && paid < total) newStatus = 'partial';
+      else if (paid === 0) newStatus = 'unpaid';
+
       onUpdateSalary(editSalId, {
         projectName: newSal.projectName,
         salaryType: newSal.salaryType,
-        totalSalary: Number(newSal.totalSalary) || 0,
-        status: newSal.status,
+        totalSalary: total,
+        paidAmount: paid,
+        status: newStatus,
       });
     } else {
+      const total = Number(newSal.totalSalary) || 0;
+      const paid = Number(newSal.paidAmount) || 0;
+      let newStatus = newSal.status;
+      if (paid >= total && total > 0) newStatus = 'paid';
+      else if (paid > 0 && paid < total) newStatus = 'partial';
+      
       onAddSalary({
         employeeName: editEmp.name,
         projectName: newSal.projectName,
         salaryType: newSal.salaryType,
-        totalSalary: Number(newSal.totalSalary) || 0,
-        paidAmount: 0,
-        status: newSal.status,
+        totalSalary: total,
+        paidAmount: paid,
+        status: newStatus,
         month: new Date().toISOString().substring(0, 7),
         id: `sal-${Date.now()}`,
         createdAt: new Date().toISOString()
       });
     }
-    setNewSal({ projectName: '', salaryType: 'project', totalSalary: '', status: 'unpaid', notes: '' });
+    setNewSal({ projectName: '', salaryType: 'project', totalSalary: '', paidAmount: '', status: 'unpaid', notes: '' });
     setShowAddSal(false);
     setEditSalId(null);
   };
@@ -204,7 +220,7 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                 <h3 style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-mid)', textTransform: 'uppercase', letterSpacing: 1.5 }}>Projects & Salaries</h3>
                 <button onClick={() => {
-                  setNewSal({ projectName: '', salaryType: 'project', totalSalary: '', status: 'unpaid', notes: '' });
+                  setNewSal({ projectName: '', salaryType: 'project', totalSalary: '', paidAmount: '', status: 'unpaid', notes: '' });
                   setEditSalId(null);
                   setShowAddSal(!showAddSal);
                 }} style={{ background: 'var(--primary-soft)', color: 'var(--primary)', border: 'none', borderRadius: 8, padding: '6px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>
@@ -243,6 +259,10 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
                       <input type="number" className="form-input" value={newSal.totalSalary} onChange={e => setNewSal({ ...newSal, totalSalary: e.target.value })} placeholder="0" />
                     </div>
                     <div>
+                      <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Paid (AED)</div>
+                      <input type="number" className="form-input" value={newSal.paidAmount} onChange={e => setNewSal({ ...newSal, paidAmount: e.target.value })} placeholder="0" />
+                    </div>
+                    <div style={{ gridColumn: 'span 2' }}>
                       <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Status</div>
                       <select className="form-select" value={newSal.status} onChange={e => setNewSal({ ...newSal, status: e.target.value })}>
                         <option value="unpaid">Unpaid</option>
@@ -271,10 +291,13 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
                         </div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-                        <div style={{ fontWeight: 700, color: 'var(--warning)', fontSize: 13 }}>AED {Number(s.totalSalary).toLocaleString()}</div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontWeight: 700, color: 'var(--warning)', fontSize: 13 }}>AED {Number(s.totalSalary).toLocaleString()}</div>
+                          {Number(s.paidAmount) > 0 && <div style={{ color: 'var(--success)', fontSize: 10, fontWeight: 600 }}>Paid: AED {Number(s.paidAmount).toLocaleString()}</div>}
+                        </div>
                         <div style={{ display: 'flex', gap: 6 }}>
                           <button onClick={() => {
-                            setNewSal({ projectName: s.projectName, salaryType: s.salaryType, totalSalary: s.totalSalary, status: s.status, notes: s.notes });
+                            setNewSal({ projectName: s.projectName, salaryType: s.salaryType, totalSalary: s.totalSalary, paidAmount: s.paidAmount || '', status: s.status, notes: s.notes });
                             setEditSalId(s.id);
                             setShowAddSal(true);
                           }} style={{ background: 'var(--primary-soft)', border: '1px solid var(--border-light)', color: 'var(--primary)', cursor: 'pointer', width: 24, height: 24, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 }}>✏️</button>
@@ -363,12 +386,85 @@ export default function EmployeesView({ employees = [], salaries = [], onAdd, on
                   <div style={{ fontSize: 11, color: 'var(--text-light)', fontStyle: 'italic', borderTop: '1px solid var(--border-light)', paddingTop: 8, marginBottom: 10 }}>{emp.notes}</div>
                 )}
 
-                <button
-                  onClick={() => openEdit(emp)}
-                  style={{ width: '100%', padding: '8px', background: 'var(--primary-soft)', color: 'var(--primary)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12, fontFamily: 'Poppins, sans-serif' }}
-                >
-                  ✏️ Edit Employee
-                </button>
+                {/* Quick Add Payment */}
+                {quickPayEmpId === emp.id ? (
+                  <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>
+                      Add Payment to Top Project
+                    </div>
+                    {empSalaries.length > 0 ? (
+                      <div>
+                        <div style={{ fontSize: 11, color: 'var(--text-mid)', marginBottom: 8 }}>
+                          Project: <strong>{empSalaries[0].projectName || 'Unnamed'}</strong>
+                        </div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <input 
+                            autoFocus
+                            type="number" 
+                            className="form-input" 
+                            placeholder="Amount..." 
+                            value={quickPayAmount}
+                            onChange={e => setQuickPayAmount(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                const topSal = empSalaries[0];
+                                const currentPaid = Number(topSal.paidAmount) || 0;
+                                const added = Number(quickPayAmount) || 0;
+                                const total = Number(topSal.totalSalary) || 0;
+                                const newPaid = currentPaid + added;
+                                let newStatus = topSal.status;
+                                if (newPaid >= total && total > 0) newStatus = 'paid';
+                                else if (newPaid > 0 && newPaid < total) newStatus = 'partial';
+                                onUpdateSalary(topSal.id, { paidAmount: newPaid, status: newStatus });
+                                setQuickPayEmpId(null);
+                                setQuickPayAmount('');
+                              }
+                              if (e.key === 'Escape') {
+                                setQuickPayEmpId(null);
+                                setQuickPayAmount('');
+                              }
+                            }}
+                            style={{ padding: '6px 10px', fontSize: 13 }}
+                          />
+                          <button onClick={() => {
+                            const topSal = empSalaries[0];
+                            const currentPaid = Number(topSal.paidAmount) || 0;
+                            const added = Number(quickPayAmount) || 0;
+                            const total = Number(topSal.totalSalary) || 0;
+                            const newPaid = currentPaid + added;
+                            let newStatus = topSal.status;
+                            if (newPaid >= total && total > 0) newStatus = 'paid';
+                            else if (newPaid > 0 && newPaid < total) newStatus = 'partial';
+                            onUpdateSalary(topSal.id, { paidAmount: newPaid, status: newStatus });
+                            setQuickPayEmpId(null);
+                            setQuickPayAmount('');
+                          }} style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, padding: '0 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Add</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>No projects available for this employee.</div>
+                    )}
+                    <button onClick={() => { setQuickPayEmpId(null); setQuickPayAmount(''); }} style={{ marginTop: 8, background: 'none', border: 'none', color: 'var(--text-light)', fontSize: 11, cursor: 'pointer', padding: 0 }}>Cancel</button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 'auto' }}>
+                    <button
+                      onClick={() => openEdit(emp)}
+                      style={{ padding: '8px', background: 'var(--bg)', color: 'var(--text-mid)', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12, fontFamily: 'Poppins, sans-serif' }}
+                    >
+                      ✏️ Edit
+                    </button>
+                    <button
+                      onClick={() => {
+                        setQuickPayEmpId(emp.id);
+                        setQuickPayAmount('');
+                      }}
+                      style={{ padding: '8px', background: 'var(--primary-soft)', color: 'var(--primary)', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 12, fontFamily: 'Poppins, sans-serif' }}
+                    >
+                      💰 Add Payment
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

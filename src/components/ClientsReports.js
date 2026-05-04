@@ -228,7 +228,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 }
 
 /* ═══ REPORTS VIEW ═══ */
-export function ReportsView({ invoices = [], clients = [], salaries = [] }) {
+export function ReportsView({ invoices = [], clients = [], salaries = [], bills = [] }) {
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
 
   // Extract all available months from invoices and salaries
@@ -255,8 +255,13 @@ export function ReportsView({ invoices = [], clients = [], salaries = [] }) {
   const totalPending = Math.max(0, totalInvoiced - totalReceived);
   
   const totalSalaries = monthSalaries.reduce((sum, sal) => sum + (Number(sal.totalSalary) || 0), 0);
-  const expectedProfit = totalInvoiced - totalSalaries;
-  const netSavings = totalReceived - totalSalaries;
+
+  // Bills for this month: monthly bills always apply, one-time bills only if their month matches
+  const monthBills = bills.filter(b => b.type === 'monthly' || (b.type === 'one-time' && b.month && b.month.substring(0, 7) === selectedMonth));
+  const totalBills = monthBills.reduce((sum, b) => sum + (Number(b.amount) || 0), 0);
+
+  const expectedProfit = totalInvoiced - totalSalaries - totalBills;
+  const netSavings = totalReceived - totalSalaries - totalBills;
 
   return (
     <div className="animate-fade-in">
@@ -293,17 +298,21 @@ export function ReportsView({ invoices = [], clients = [], salaries = [] }) {
           <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Salaries</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#DC143C' }}>AED {totalSalaries.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
         </div>
+        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Regular Bills</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#f97316' }}>AED {totalBills.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 32 }}>
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
-          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Expected Profit (Invoiced - Salaries)</div>
+          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Expected Profit (Invoiced − Salaries − Bills)</div>
           <div style={{ fontSize: 32, fontWeight: 700, color: expectedProfit >= 0 ? '#10b981' : '#ef4444' }}>
             AED {expectedProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}
           </div>
         </div>
         <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
-          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Net Profit / Savings (Received - Salaries)</div>
+          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Net Profit / Savings (Received − Salaries − Bills)</div>
           <div style={{ fontSize: 32, fontWeight: 700, color: netSavings >= 0 ? '#10b981' : '#ef4444' }}>
             AED {netSavings.toLocaleString('en-US', { minimumFractionDigits: 2 })}
           </div>
@@ -352,6 +361,27 @@ export function ReportsView({ invoices = [], clients = [], salaries = [] }) {
           )}
         </div>
       </div>
+
+      {/* Bills breakdown for selected month */}
+      {monthBills.length > 0 && (
+        <div className="card" style={{ padding: 24, marginTop: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 className="section-title" style={{ margin: 0 }}>🧾 Regular Bills ({monthBills.length})</h3>
+            <div style={{ fontWeight: 700, color: '#f97316', fontSize: 14 }}>−AED {totalBills.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+          </div>
+          {monthBills.map((bill) => (
+            <div key={bill.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-light)' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{bill.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 3 }}>
+                  {bill.category || 'Other'} · {bill.type === 'monthly' ? '🔄 Monthly' : `📌 One-Time (${bill.month})`}
+                </div>
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#f97316' }}>AED {(Number(bill.amount) || 0).toLocaleString()}</div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -138,6 +138,12 @@ export function prevYM(ym) {
   return `${y}-${String(m - 1).padStart(2, '0')}`;
 }
 
+export function nextYM(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  if (m === 12) return `${y + 1}-01`;
+  return `${y}-${String(m + 1).padStart(2, '0')}`;
+}
+
 /**
  * Build a finance ledger row from a saved invoice.
  * financeData is the extra block collected in InvoiceForm.
@@ -240,4 +246,79 @@ export function extractSalariesFromInvoice(inv) {
       status: 'unpaid',
       createdAt: new Date().toISOString(),
     }));
+}
+
+/**
+ * Called on 1st of a new month for salaries.
+ * - monthly → always clone a fresh one for the new month. 
+ * - fully unpaid → completely moved to the new month (no trace left in old month).
+ * - partially paid → capped at paid amount in old month (marked paid), remaining balance cloned to new month.
+ * - fully paid → stays in old month.
+ */
+export function rolloverSalariesMonth(records, newMonth) {
+  const last = prevYM(newMonth);
+  const result = [];
+
+  records.forEach((row) => {
+    if (row.month === last) {
+      const total = Number(row.totalSalary) || 0;
+      const paid = Number(row.paidAmount) || 0;
+      const remaining = Math.max(0, total - paid);
+
+      if (row.salaryType === 'monthly') {
+        // 1. Create the NEW regular monthly installment for the new month
+        result.push({
+          ...row,
+          id: `sal-rollover-${row.id}-${Date.now()}`,
+          month: newMonth,
+          paidAmount: 0,
+          status: 'unpaid',
+          rolledOver: true,
+          originalMonth: row.originalMonth || last,
+          createdAt: new Date().toISOString(),
+        });
+
+        // 2. Handle the OLD installment
+        if (paid > 0) {
+          result.push({ ...row, status: 'pushed' });
+          if (remaining > 0) {
+            result.push({
+              ...row,
+              id: `sal-arrears-${row.id}-${Date.now()}`,
+              month: newMonth,
+              totalSalary: remaining,
+              paidAmount: 0,
+              status: 'unpaid',
+              rolledOver: true,
+            });
+          }
+        } else {
+          result.push({ ...row, month: newMonth, rolledOver: true });
+        }
+      } else if (row.salaryType === 'project') {
+        if (paid > 0) {
+          result.push({ ...row, status: 'pushed' });
+          if (remaining > 0) {
+            result.push({
+              ...row,
+              id: `sal-carry-${row.id}-${Date.now()}`,
+              month: newMonth,
+              totalSalary: remaining,
+              paidAmount: 0,
+              status: 'unpaid',
+              rolledOver: true,
+            });
+          }
+        } else {
+          result.push({ ...row, month: newMonth, rolledOver: true });
+        }
+      } else {
+        result.push(row);
+      }
+    } else {
+      result.push(row);
+    }
+  });
+
+  return result;
 }
