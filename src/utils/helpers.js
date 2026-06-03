@@ -322,3 +322,29 @@ export function rolloverSalariesMonth(records, newMonth) {
 
   return result;
 }
+
+export function getNextMonthDate(dateStr) {
+  if (!dateStr) return today();
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return today();
+  let year = parseInt(parts[0], 10);
+  let month = parseInt(parts[1], 10);
+  let day = parseInt(parts[2], 10);
+
+  month += 1;
+  if (month > 12) {
+    month = 1;
+    year += 1;
+  }
+
+  const maxDays = new Date(year, month, 0).getDate();
+  if (day > maxDays) {
+    day = maxDays;
+  }
+
+  const yStr = String(year);
+  const mStr = String(month).padStart(2, '0');
+  const dStr = String(day).padStart(2, '0');
+  return `${yStr}-${mStr}-${dStr}`;
+}
+

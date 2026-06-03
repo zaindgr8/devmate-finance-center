@@ -3,13 +3,47 @@ import Icon from './Icon';
 import { Btn, StatCard, Input } from './UI';
 
 /* ═══ CLIENTS VIEW ═══ */
-export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient }) {
+export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient, onReorder }) {
   const [showAdd, setShowAdd] = useState(false);
   const [newC, setNewC] = useState({ clientName: '', clientDesignation: '', businessName: '', clientEmail: '', clientPhone: '', clientAddress: '', paymentLink: '' });
   const [viewProjClient, setViewProjClient] = useState(null);
   const [showAddProj, setShowAddProj] = useState(false);
   const [newProj, setNewProj] = useState({ name: '', type: 'One Time', total: '', details: '' });
   const [editProjId, setEditProjId] = useState(null);
+
+  const [dragName, setDragName] = useState(null);
+  const [dragOverName, setDragOverName] = useState(null);
+
+  const handleDragStart = (e, name) => {
+    setDragName(name);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e, name) => {
+    e.preventDefault();
+    if (name !== dragName) setDragOverName(name);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (!dragName || !dragOverName || dragName === dragOverName) {
+      setDragName(null); setDragOverName(null); return;
+    }
+
+    const fromIdx = clients.findIndex(c => c.name === dragName);
+    const toIdx = clients.findIndex(c => c.name === dragOverName);
+
+    if (fromIdx === -1 || toIdx === -1) {
+      setDragName(null); setDragOverName(null); return;
+    }
+
+    const newClients = [...clients];
+    const [moved] = newClients.splice(fromIdx, 1);
+    newClients.splice(toIdx, 0, moved);
+
+    if (onReorder) onReorder(newClients);
+    setDragName(null); setDragOverName(null);
+  };
 
   const handleAdd = () => {
     if (!newC.clientName || !newC.businessName) {
@@ -86,13 +120,34 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
           {clients.map((c) => {
             const st = stats(c);
+            const isDragTarget = dragOverName === c.name && dragName !== c.name;
             return (
-              <div key={c.name} className="card" style={{ padding: 20 }}>
+              <div 
+                key={c.name} 
+                className="card" 
+                draggable
+                onDragStart={(e) => handleDragStart(e, c.name)}
+                onDragOver={(e) => handleDragOver(e, c.name)}
+                onDragEnd={() => { setDragName(null); setDragOverName(null); }}
+                onDrop={handleDrop}
+                style={{ 
+                  padding: 20,
+                  cursor: 'grab',
+                  opacity: dragName === c.name ? 0.45 : 1,
+                  border: isDragTarget ? '2.5px solid var(--primary)' : '1px solid var(--border)',
+                  transition: 'all 0.15s ease'
+                }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: 10 }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 15 }}>{c.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-light)' }}>
-                      {c.designation && `${c.designation} · `}{c.businessName}
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <div style={{ color: 'var(--text-faint)', fontSize: 16, cursor: 'grab', userSelect: 'none', display: 'flex', alignItems: 'center' }} title="Drag to reorder">
+                      ⠿
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15 }}>{c.name}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-light)' }}>
+                        {c.designation && `${c.designation} · `}{c.businessName}
+                      </div>
                     </div>
                   </div>
                   <Btn variant="danger" size="sm" onClick={() => onDelete(c.name)}>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Icon from './components/Icon';
 import Dashboard from './components/Dashboard';
 import InvoiceForm from './components/InvoiceForm';
@@ -11,7 +11,7 @@ import EmployeesView from './components/EmployeesView';
 import BillsView from './components/BillsView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
 import PersonalView from './components/PersonalView';
-import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice } from './utils/helpers';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments } from './api';
 // Using PNG logo from public/logo_2.png
 
@@ -127,6 +127,57 @@ export default function App() {
     }
     init();
   }, [isLoggedIn]);
+
+  // Keep a ref to invoices to access the latest state in the periodic checker
+  const invoicesRef = useRef(invoices);
+  useEffect(() => {
+    invoicesRef.current = invoices;
+  }, [invoices]);
+
+  // Periodic check to auto-activate scheduled invoices whose time has passed
+  useEffect(() => {
+    if (!isLoggedIn) return;
+
+    const checkScheduled = async () => {
+      const currentInvoices = invoicesRef.current;
+      if (!currentInvoices || currentInvoices.length === 0) return;
+
+      const now = new Date();
+      const toActivate = currentInvoices.filter(
+        (inv) =>
+          inv.status === 'scheduled' &&
+          inv.scheduledDate &&
+          new Date(inv.scheduledDate) <= now
+      );
+
+      if (toActivate.length > 0) {
+        try {
+          console.log(`Auto-activating ${toActivate.length} scheduled invoice(s)...`);
+          const updatedList = currentInvoices.map((inv) => {
+            const match = toActivate.find((a) => a.invoiceNumber === inv.invoiceNumber);
+            return match ? { ...inv, status: 'pending' } : inv;
+          });
+          // Update state
+          setInvoices(updatedList);
+          // Sync to Supabase database
+          await Promise.all(
+            toActivate.map((inv) => upsertInvoice({ ...inv, status: 'pending' }))
+          );
+          showToast(`${toActivate.length} scheduled invoice(s) activated!`);
+        } catch (err) {
+          console.error("Failed to auto-activate scheduled invoices:", err);
+        }
+      }
+    };
+
+    // Run immediately when component mounts/isLoggedIn changes
+    checkScheduled();
+
+    // Check every 10 seconds
+    const intervalId = setInterval(checkScheduled, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [isLoggedIn, showToast]);
 
   const handleLogin = () => {
     localStorage.setItem('dm_logged_in', 'true');
@@ -302,13 +353,110 @@ export default function App() {
     [invoices, saveInvoices]
   );
 
+  const checkAndCloneRecurring = useCallback(
+    async (invoice, updatedInvoicesList, currentFinance, currentSalaries, nextInvoiceNum) => {
+      const paymentType = invoice.financeData?.paymentType || invoice.financeRaw?.paymentType;
+      const clonedToNextMonth = invoice.financeData?.clonedToNextMonth || invoice.financeRaw?.clonedToNextMonth;
+      if (paymentType === 'recurring' && !clonedToNextMonth) {
+        const nextDate = getNextMonthDate(invoice.date);
+        const nextDueDate = invoice.dueDate ? getNextMonthDate(invoice.dueDate) : '';
+
+        // Mark current invoice as cloned
+        const updatedOriginal = {
+          ...invoice,
+          financeData: {
+            ...(invoice.financeData || {}),
+            clonedToNextMonth: true
+          },
+          financeRaw: {
+            ...(invoice.financeRaw || {}),
+            clonedToNextMonth: true
+          }
+        };
+
+        // Clone invoice to next month
+        const clonedInvoice = {
+          ...invoice,
+          invoiceNumber: String(nextInvoiceNum),
+          status: 'pending',
+          payingNow: 0,
+          remaining: invoice.totalPayment,
+          date: nextDate,
+          dueDate: nextDueDate,
+          createdAt: new Date().toISOString(),
+          financeData: {
+            ...(invoice.financeData || {}),
+            clonedToNextMonth: false
+          },
+          financeRaw: {
+            ...(invoice.financeRaw || {}),
+            clonedToNextMonth: false
+          }
+        };
+
+        const finRow = createFinanceRecord(clonedInvoice);
+        const newSalaries = extractSalariesFromInvoice(clonedInvoice);
+
+        // Update setting & sync DB
+        saveNextNum(nextInvoiceNum + 1);
+        await upsertInvoice(clonedInvoice);
+        await upsertInvoice(updatedOriginal);
+
+        const newList = [
+          clonedInvoice,
+          ...updatedInvoicesList.map(i => i.invoiceNumber === invoice.invoiceNumber ? updatedOriginal : i)
+        ];
+
+        saveInvoices(newList);
+        saveFinanceState([finRow, ...currentFinance], finRow);
+        if (newSalaries.length > 0) {
+          saveSalariesState([...newSalaries, ...currentSalaries], newSalaries);
+        }
+
+        showToast(`Invoice #${invoice.invoiceNumber} paid! Cloned to next month as #${nextInvoiceNum}`);
+        return true;
+      }
+      return false;
+    },
+    [saveInvoices, saveFinanceState, saveSalariesState, saveNextNum, showToast]
+  );
+
   const handleUpdateStatus = useCallback(
-    (num, st) => {
-      const updatedItem = { ...invoices.find(i => i.invoiceNumber === num), status: st };
-      saveInvoices(invoices.map((i) => (i.invoiceNumber === num ? updatedItem : i)), updatedItem);
+    async (num, st) => {
+      const inv = invoices.find(i => i.invoiceNumber === num);
+      if (!inv) return;
+      // Stamp paidAt when marking as paid so the Paid tab filters by actual payment date
+      const paidAt = st === 'paid' ? new Date().toISOString() : inv.paidAt;
+      const updatedItem = { ...inv, status: st, ...(paidAt ? { paidAt } : {}) };
+      const updatedList = invoices.map((i) => (i.invoiceNumber === num ? updatedItem : i));
+
+      if (st === 'paid') {
+        const cloned = await checkAndCloneRecurring(updatedItem, updatedList, finance, salaries, nextNum);
+        if (cloned) return;
+      }
+
+      saveInvoices(updatedList, updatedItem);
       showToast(`Invoice #${num} marked ${st}`);
     },
-    [invoices, saveInvoices]
+    [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, showToast]
+  );
+
+  const handleReorderInvoices = useCallback(
+    (reorderedInvoices) => {
+      setInvoices(reorderedInvoices);
+      const order = reorderedInvoices.map((i) => String(i.invoiceNumber));
+      updateSetting('invoice_order', JSON.stringify(order));
+    },
+    []
+  );
+
+  const handleReorderClients = useCallback(
+    (reorderedClients) => {
+      setClients(reorderedClients);
+      const order = reorderedClients.map((c) => c.name);
+      updateSetting('clients_order', JSON.stringify(order));
+    },
+    []
   );
 
   const handleDeleteClient = useCallback(
@@ -323,14 +471,16 @@ export default function App() {
 
   // Confirm a pending invoice — sets status to paid/partial and updates finance record
   const handleConfirmPayment = useCallback(
-    (num) => {
+    async (num) => {
       const inv = invoices.find(i => i.invoiceNumber === num);
       if (!inv) return;
       const newStatus = Number(inv.payingNow) >= Number(inv.totalPayment)
         ? 'paid'
         : Number(inv.payingNow) > 0 ? 'partial' : 'unpaid';
-      const updatedInv = { ...inv, status: newStatus };
-      saveInvoices(invoices.map(i => i.invoiceNumber === num ? updatedInv : i), updatedInv);
+      // Stamp paidAt with the exact moment Confirm is clicked
+      const paidAt = new Date().toISOString();
+      const updatedInv = { ...inv, status: newStatus, paidAt };
+      const updatedList = invoices.map(i => i.invoiceNumber === num ? updatedInv : i);
 
       // Update linked finance record — inject paidAmount now that payment is confirmed
       const updatedFinList = finance.map(r => {
@@ -347,9 +497,16 @@ export default function App() {
       });
       const updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
       saveFinanceState(updatedFinList, updatedFinItem);
+
+      if (newStatus === 'paid') {
+        const cloned = await checkAndCloneRecurring(updatedInv, updatedList, updatedFinList, salaries, nextNum);
+        if (cloned) return;
+      }
+
+      saveInvoices(updatedList, updatedInv);
       showToast(`Invoice #${num} confirmed as ${newStatus}`);
     },
-    [invoices, finance, saveInvoices, saveFinanceState]
+    [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, saveFinanceState, showToast]
   );
 
   // Merge standalone salary records into finance rows so Finance Ledger reflects them
@@ -580,11 +737,13 @@ export default function App() {
               setSearchQ={setSearchQ}
               clientFilter={clientFilter}
               setClientFilter={setClientFilter}
+              onNew={() => { setEditInv(null); setView(VIEWS.CREATE); }}
               onPreview={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
               onEdit={(inv) => { setEditInv(inv); setView(VIEWS.CREATE); }}
               onDelete={handleDeleteInvoice}
               onUpdateStatus={handleUpdateStatus}
               onConfirmPayment={handleConfirmPayment}
+              onReorder={handleReorderInvoices}
             />
           )}
 
@@ -595,6 +754,7 @@ export default function App() {
               onDelete={handleDeleteClient}
               onLedger={(name) => { setClientFilter(name); setSearchQ(''); setView(VIEWS.HISTORY); }}
               onAddClient={addOrUpdateClient}
+              onReorder={handleReorderClients}
             />
           )}
 

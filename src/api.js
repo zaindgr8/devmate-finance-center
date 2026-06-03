@@ -54,6 +54,17 @@ export async function fetchAllData() {
 
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
   const lastRolloverSet = (settings || []).find(s => s.key === 'last_rollover');
+  const invoiceOrderSet = (settings || []).find(s => s.key === 'invoice_order');
+  let invoiceOrder = [];
+  try {
+    invoiceOrder = invoiceOrderSet ? JSON.parse(invoiceOrderSet.value || '[]') : [];
+  } catch (_) { invoiceOrder = []; }
+
+  const clientsOrderSet = (settings || []).find(s => s.key === 'clients_order');
+  let clientsOrder = [];
+  try {
+    clientsOrder = clientsOrderSet ? JSON.parse(clientsOrderSet.value || '[]') : [];
+  } catch (_) { clientsOrder = []; }
 
   const personalPaymentsSet = (settings || []).find(s => s.key === 'personal_payments');
   let personalData = { allahPaid: 0, savedAmount: 0 };
@@ -62,13 +73,34 @@ export async function fetchAllData() {
   } catch (_) { personalData = { allahPaid: 0, savedAmount: 0 }; }
 
   return {
-    clients: (clients || []).map(toCamel),
+    clients: (clients || []).map(toCamel).sort((a, b) => {
+      const idxA = clientsOrder.indexOf(a.name);
+      const idxB = clientsOrder.indexOf(b.name);
+      if (idxA !== -1 && idxB !== -1) {
+        return idxA - idxB;
+      }
+      if (idxA !== -1) return 1;
+      if (idxB !== -1) return -1;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+    }),
     invoices: (invoices || []).map(inv => {
       const camelInv = toCamel(inv);
+      if (camelInv.financeRaw) {
+        camelInv.financeData = camelInv.financeRaw;
+      }
       if (camelInv.financeRaw && camelInv.financeRaw.scheduled_date) {
         camelInv.scheduledDate = camelInv.financeRaw.scheduled_date;
       }
       return camelInv;
+    }).sort((a, b) => {
+      const idxA = invoiceOrder.indexOf(String(a.invoiceNumber));
+      const idxB = invoiceOrder.indexOf(String(b.invoiceNumber));
+      if (idxA !== -1 && idxB !== -1) {
+        return idxA - idxB;
+      }
+      if (idxA !== -1) return 1;
+      if (idxB !== -1) return -1;
+      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0) || Number(b.invoiceNumber) - Number(a.invoiceNumber);
     }),
     finance: (finance || []).map(toCamel),
     salaries: (salaries || []).map(toCamel).sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999)),
