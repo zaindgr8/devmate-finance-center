@@ -296,6 +296,8 @@ export function rolloverSalariesMonth(records, newMonth) {
           result.push({ ...row, month: newMonth, rolledOver: true });
         }
       } else if (row.salaryType === 'project') {
+        // One-Time/Project salaries: only carry over the remaining balance if partially paid.
+        // Fully unpaid project salaries stay in their original month — they do NOT auto-roll.
         if (paid > 0) {
           result.push({ ...row, status: 'pushed' });
           if (remaining > 0) {
@@ -310,7 +312,8 @@ export function rolloverSalariesMonth(records, newMonth) {
             });
           }
         } else {
-          result.push({ ...row, month: newMonth, rolledOver: true });
+          // Unpaid one-time salary: keep it in its original month, do not roll over
+          result.push(row);
         }
       } else {
         result.push(row);

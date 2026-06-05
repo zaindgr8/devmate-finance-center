@@ -72,6 +72,12 @@ export async function fetchAllData() {
     personalData = personalPaymentsSet ? toCamel(JSON.parse(personalPaymentsSet.value || '{}')) : { allahPaid: 0, savedAmount: 0 };
   } catch (_) { personalData = { allahPaid: 0, savedAmount: 0 }; }
 
+  const urgentSalaryIdsSet = (settings || []).find(s => s.key === 'urgent_salary_ids');
+  let urgentSalaryIds = [];
+  try {
+    urgentSalaryIds = urgentSalaryIdsSet ? JSON.parse(urgentSalaryIdsSet.value || '[]') : [];
+  } catch (_) { urgentSalaryIds = []; }
+
   return {
     clients: (clients || []).map(toCamel).sort((a, b) => {
       const idxA = clientsOrder.indexOf(a.name);
@@ -109,7 +115,8 @@ export async function fetchAllData() {
     billSections: sectionsData,
     personal: personalData,
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
-    lastRollover: lastRolloverSet ? lastRolloverSet.value : null
+    lastRollover: lastRolloverSet ? lastRolloverSet.value : null,
+    urgentSalaryIds
   };
 }
 

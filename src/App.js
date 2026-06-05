@@ -11,7 +11,8 @@ import EmployeesView from './components/EmployeesView';
 import BillsView from './components/BillsView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
 import PersonalView from './components/PersonalView';
-import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate } from './utils/helpers';
+import UrgentSalariesPanel from './components/UrgentSalariesPanel';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments } from './api';
 // Using PNG logo from public/logo_2.png
 
@@ -49,6 +50,10 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState('connecting'); // 'connecting', 'connected', 'error'
   const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('dm_logged_in') === 'true');
   const [mobileNav, setMobileNav] = useState(false);
+  const [urgentSalaryIds, setUrgentSalaryIds] = useState([]);
+  const [showUrgentPanel, setShowUrgentPanel] = useState(() => {
+    return localStorage.getItem('dm_show_urgent_panel') !== 'false';
+  });
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -87,6 +92,7 @@ export default function App() {
         setEmployees(db.employees || []);
         setBills(db.bills || []);
         setBillSections(db.billSections || []);
+        setUrgentSalaryIds(db.urgentSalaryIds || []);
         if (db.personal) setPersonal(db.personal);
 
         let currentSals = [...(db.salaries || [])];
@@ -220,8 +226,40 @@ export default function App() {
 
   const saveSalariesState = useCallback((v, salariesToUpsert) => {
     setSalaries(v);
-    if (salariesToUpsert) upsertSalaries(Array.isArray(salariesToUpsert) ? salariesToUpsert : [salariesToUpsert]);
+    if (salariesToUpsert) {
+      upsertSalaries(Array.isArray(salariesToUpsert) ? salariesToUpsert : [salariesToUpsert]);
+    }
   }, []);
+
+  const handleAutoPushPaidMonthlySalary = useCallback((updatedList, updatedItem) => {
+    if (updatedItem && updatedItem.salaryType === 'monthly' && updatedItem.status === 'paid' && !updatedItem.autoPushed) {
+      updatedItem.autoPushed = true;
+      const nextMonth = nextYM(updatedItem.month);
+      const nextRow = {
+        ...updatedItem,
+        id: `sal-auto-monthly-${updatedItem.id}-${Date.now()}`,
+        month: nextMonth,
+        paidAmount: 0,
+        status: 'unpaid',
+        rolledOver: true,
+        autoPushed: false,
+        createdAt: new Date().toISOString()
+      };
+      const finalList = updatedList.map(r => r.id === updatedItem.id ? updatedItem : r);
+      finalList.unshift(nextRow);
+      return { list: finalList, upsertItems: [updatedItem, nextRow] };
+    }
+    return { list: updatedList, upsertItems: updatedItem };
+  }, []);
+
+  const handleUpdateSalary = useCallback((id, patch) => {
+    const itemToUpdate = salaries.find(r => r.id === id);
+    if (!itemToUpdate) return;
+    const updatedItem = { ...itemToUpdate, ...patch };
+    const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
+    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
+    saveSalariesState(list, upsertItems);
+  }, [salaries, handleAutoPushPaidMonthlySalary, saveSalariesState]);
 
   const saveEmployees = useCallback(async (v, empToUpsert) => {
     setEmployees(v);
@@ -262,6 +300,39 @@ export default function App() {
     setEmployees(prev => prev.filter(e => e.id !== id));
     deleteEmployee(id);
     showToast('Employee removed', 'error');
+  }, []);
+
+  const handleToggleUrgent = useCallback((id) => {
+    setUrgentSalaryIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      updateSetting('urgent_salary_ids', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const handleAddUrgent = useCallback((id) => {
+    setUrgentSalaryIds((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      updateSetting('urgent_salary_ids', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const handleRemoveUrgent = useCallback((id) => {
+    setUrgentSalaryIds((prev) => {
+      const next = prev.filter((x) => x !== id);
+      updateSetting('urgent_salary_ids', JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const toggleUrgentPanel = useCallback(() => {
+    setShowUrgentPanel((prev) => {
+      const next = !prev;
+      localStorage.setItem('dm_show_urgent_panel', String(next));
+      return next;
+    });
   }, []);
 
   // Client management
@@ -789,11 +860,43 @@ export default function App() {
               clients={clients}
               employees={employees}
               onUpdate={(id, patch) => {
+                if (Array.isArray(id)) {
+                  let baseList = [...salaries];
+                  const upserts = [];
+                  id.forEach(({ id: itemId, patch: itemPatch }) => {
+                    const idx = baseList.findIndex(r => r.id === itemId);
+                    if (idx !== -1) {
+                      const updatedItem = { ...baseList[idx], ...itemPatch };
+                      baseList[idx] = updatedItem;
+                      upserts.push(updatedItem);
+                    }
+                  });
+                  let finalList = [...baseList];
+                  const finalUpserts = [...upserts];
+                  upserts.forEach(item => {
+                    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(finalList, item);
+                    finalList = list;
+                    if (Array.isArray(upsertItems)) {
+                      upsertItems.forEach(ui => {
+                        if (!finalUpserts.find(x => x.id === ui.id)) finalUpserts.push(ui);
+                      });
+                    } else if (upsertItems) {
+                      if (!finalUpserts.find(x => x.id === upsertItems.id)) finalUpserts.push(upsertItems);
+                    }
+                  });
+                  saveSalariesState(finalList, finalUpserts);
+                  return;
+                }
                 const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
-                const updated = salaries.map((r) => r.id === id ? updatedItem : r);
-                saveSalariesState(updated, updatedItem);
+                const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
+                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
+                saveSalariesState(list, upsertItems);
               }}
-              onAdd={(row) => saveSalariesState([row, ...salaries], row)}
+              onAdd={(row) => {
+                const baseList = [row, ...salaries];
+                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, row);
+                saveSalariesState(list, upsertItems);
+              }}
               onDelete={(id) => {
                 saveSalariesState(salaries.filter((r) => r.id !== id));
                 deleteSalary(id);
@@ -804,6 +907,8 @@ export default function App() {
                 if (newRow) updatedList.unshift(newRow);
                 saveSalariesState(updatedList, newRow ? [updatedRow, newRow] : [updatedRow]);
               }}
+              urgentSalaryIds={urgentSalaryIds}
+              onToggleUrgent={handleToggleUrgent}
             />
           )}
 
@@ -816,11 +921,48 @@ export default function App() {
               onAdd={(emp) => saveEmployees([emp, ...employees], emp)}
               onUpdate={(id, emp) => saveEmployees(employees.map(e => e.id === id ? emp : e), emp)}
               onDelete={handleDeleteEmployee}
-              onAddSalary={(row) => saveSalariesState([row, ...salaries], row)}
+              onReorder={(reorderedEmps) => {
+                setEmployees(reorderedEmps);
+                const order = reorderedEmps.map(e => e.id);
+                updateSetting('employees_order', JSON.stringify(order));
+              }}
+              onAddSalary={(row) => {
+                const baseList = [row, ...salaries];
+                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, row);
+                saveSalariesState(list, upsertItems);
+              }}
               onUpdateSalary={(id, patch) => {
+                if (Array.isArray(id)) {
+                  let baseList = [...salaries];
+                  const upserts = [];
+                  id.forEach(({ id: itemId, patch: itemPatch }) => {
+                    const idx = baseList.findIndex(r => r.id === itemId);
+                    if (idx !== -1) {
+                      const updatedItem = { ...baseList[idx], ...itemPatch };
+                      baseList[idx] = updatedItem;
+                      upserts.push(updatedItem);
+                    }
+                  });
+                  let finalList = [...baseList];
+                  const finalUpserts = [...upserts];
+                  upserts.forEach(item => {
+                    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(finalList, item);
+                    finalList = list;
+                    if (Array.isArray(upsertItems)) {
+                      upsertItems.forEach(ui => {
+                        if (!finalUpserts.find(x => x.id === ui.id)) finalUpserts.push(ui);
+                      });
+                    } else if (upsertItems) {
+                      if (!finalUpserts.find(x => x.id === upsertItems.id)) finalUpserts.push(upsertItems);
+                    }
+                  });
+                  saveSalariesState(finalList, finalUpserts);
+                  return;
+                }
                 const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
-                const updated = salaries.map((r) => r.id === id ? updatedItem : r);
-                saveSalariesState(updated, updatedItem);
+                const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
+                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
+                saveSalariesState(list, upsertItems);
               }}
               onDeleteSalary={(id) => {
                 saveSalariesState(salaries.filter((r) => r.id !== id));
@@ -856,6 +998,51 @@ export default function App() {
             />
           )}
         </main>
+
+        {view === VIEWS.SALARIES && (showUrgentPanel ? (
+          <UrgentSalariesPanel
+            urgentSalaryIds={urgentSalaryIds}
+            salaries={salaries}
+            onAdd={handleAddUrgent}
+            onRemove={handleRemoveUrgent}
+            onToggle={toggleUrgentPanel}
+            onUpdateSalary={handleUpdateSalary}
+          />
+        ) : (
+          <div
+            onClick={toggleUrgentPanel}
+            title="Expand Urgent Salaries"
+            className="no-print"
+            style={{
+              position: 'fixed',
+              right: 0,
+              top: '50%',
+              transform: 'translateY(-50%)',
+              writingMode: 'vertical-rl',
+              textOrientation: 'mixed',
+              background: '#DC143C',
+              color: '#fff',
+              padding: '12px 6px',
+              borderRadius: '8px 0 0 8px',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '11px',
+              letterSpacing: '1px',
+              boxShadow: '-2px 0 8px rgba(0,0,0,0.15)',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              userSelect: 'none',
+              transition: 'background 0.2s',
+            }}
+            onMouseEnter={e => e.currentTarget.style.background = '#b01030'}
+            onMouseLeave={e => e.currentTarget.style.background = '#DC143C'}
+          >
+            <span>🚨</span>
+            <span>URGENT SALARIES</span>
+          </div>
+        ))}
       </div>
     </div>
   );

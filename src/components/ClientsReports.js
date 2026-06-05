@@ -122,15 +122,15 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
             const st = stats(c);
             const isDragTarget = dragOverName === c.name && dragName !== c.name;
             return (
-              <div 
-                key={c.name} 
-                className="card" 
+              <div
+                key={c.name}
+                className="card"
                 draggable
                 onDragStart={(e) => handleDragStart(e, c.name)}
                 onDragOver={(e) => handleDragOver(e, c.name)}
                 onDragEnd={() => { setDragName(null); setDragOverName(null); }}
                 onDrop={handleDrop}
-                style={{ 
+                style={{
                   padding: 20,
                   cursor: 'grab',
                   opacity: dragName === c.name ? 0.45 : 1,
@@ -247,7 +247,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
                   const clientObj = clients.find(c => c.name === viewProjClient);
                   const projects = clientObj?.projects || [];
                   if (projects.length === 0) return <tr><td colSpan="7" style={{ textAlign: 'center', padding: 20, color: 'var(--text-light)' }}>No projects found for this client.</td></tr>;
-                  
+
                   return projects.map((p) => {
                     const pInvs = invoices.filter(i => i.clientName === viewProjClient && i.projectName === p.name);
                     const pPaid = pInvs.filter(i => i.status !== 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
@@ -308,7 +308,7 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
   const totalReceived = monthInvoices.filter(inv => inv.status !== 'pending' && inv.status !== 'unpaid')
     .reduce((sum, inv) => sum + (inv.status === 'paid' ? (Number(inv.totalPayment) || 0) : (Number(inv.payingNow) || 0)), 0);
   const totalPending = Math.max(0, totalInvoiced - totalReceived);
-  
+
   const totalSalaries = monthSalaries.reduce((sum, sal) => sum + (Number(sal.totalSalary) || 0), 0);
 
   // Bills for this month: monthly bills always apply, one-time bills only if their month matches
@@ -323,8 +323,8 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>Monthly Reports</h1>
         <div>
-          <select 
-            value={selectedMonth} 
+          <select
+            value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
             className="form-select"
             style={{ width: 200, padding: '10px 14px', fontWeight: 600, fontSize: 14 }}
@@ -408,7 +408,7 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
               <div key={sal.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border-light)' }}>
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{sal.employeeName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{sal.projectName || 'N/A'} • {sal.salaryType === 'monthly' ? '🔄 Monthly' : '📦 Project'}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{sal.projectName || 'N/A'} • {sal.salaryType === 'monthly' ? '🔄 Monthly' : '📦 One-Time'}</div>
                 </div>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>AED {(Number(sal.totalSalary) || 0).toLocaleString()}</div>
               </div>
