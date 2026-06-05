@@ -496,16 +496,18 @@ export default function App() {
     async (num, st) => {
       const inv = invoices.find(i => i.invoiceNumber === num);
       if (!inv) return;
-      // Stamp paidAt when marking as paid so the Paid tab filters by actual payment date
+      // Stamp paidAt when marking as paid
       const paidAt = st === 'paid' ? new Date().toISOString() : inv.paidAt;
       // Use payingNow if set, otherwise fall back to totalPayment
       const effectivePaid = Number(inv.payingNow) > 0 ? Number(inv.payingNow) : Number(inv.totalPayment) || 0;
       const updatedItem = { ...inv, status: st, payingNow: effectivePaid, ...(paidAt ? { paidAt } : {}) };
       const updatedList = invoices.map((i) => (i.invoiceNumber === num ? updatedItem : i));
 
-      // Also update the linked finance record so paidAmount reflects the payment
+      // Compute updated finance list (update paidAmount when marking paid/partial)
+      let updatedFinList = finance;
+      let updatedFinItem = null;
       if (st === 'paid' || st === 'partial') {
-        const updatedFinList = finance.map(r => {
+        updatedFinList = finance.map(r => {
           if (r.invoiceId === num) {
             const totalSalaries = Number(r.totalSalaries) || 0;
             const allahShare = r._allahManual
@@ -516,16 +518,22 @@ export default function App() {
           }
           return r;
         });
-        const updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
-        saveFinanceState(updatedFinList, updatedFinItem);
+        updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
       }
 
+      // Handle recurring clone BEFORE any state updates
       if (st === 'paid') {
-        const cloned = await checkAndCloneRecurring(updatedItem, updatedList, finance, salaries, nextNum);
-        if (cloned) return;
+        try {
+          const cloned = await checkAndCloneRecurring(updatedItem, updatedList, updatedFinList, salaries, nextNum);
+          if (cloned) return; // checkAndCloneRecurring handles its own saves
+        } catch (err) {
+          console.error('Error cloning recurring invoice:', err);
+        }
       }
 
+      // Save invoice + finance state together
       saveInvoices(updatedList, updatedItem);
+      if (updatedFinItem) saveFinanceState(updatedFinList, updatedFinItem);
       showToast(`Invoice #${num} marked ${st}`);
     },
     [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, saveFinanceState, showToast]
