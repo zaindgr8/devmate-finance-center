@@ -97,6 +97,9 @@ export async function fetchAllData() {
       if (camelInv.financeRaw && camelInv.financeRaw.scheduled_date) {
         camelInv.scheduledDate = camelInv.financeRaw.scheduled_date;
       }
+      if (camelInv.financeRaw && camelInv.financeRaw.paid_at) {
+        camelInv.paidAt = camelInv.financeRaw.paid_at;
+      }
       return camelInv;
     }).sort((a, b) => {
       const idxA = invoiceOrder.indexOf(String(a.invoiceNumber));
@@ -148,6 +151,12 @@ export async function upsertInvoice(invoice) {
     payload.finance_raw = payload.finance_raw || {};
     payload.finance_raw.scheduled_date = payload.scheduled_date;
     delete payload.scheduled_date;
+  }
+  // Store paid_at inside finance_raw to avoid schema issues if column is missing
+  if (payload.paid_at) {
+    payload.finance_raw = payload.finance_raw || {};
+    payload.finance_raw.paid_at = payload.paid_at;
+    delete payload.paid_at;
   }
   // Ensure project_name is always explicitly set
   if (!('project_name' in payload)) {

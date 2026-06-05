@@ -572,7 +572,7 @@ export default function App() {
     async (num) => {
       const inv = invoices.find(i => i.invoiceNumber === num);
       if (!inv) return;
-      // Use payingNow if set, otherwise fall back to totalPayment (handles invoices created without payingNow)
+      // Use payingNow if set, otherwise fall back to totalPayment
       const effectivePaid = Number(inv.payingNow) > 0 ? Number(inv.payingNow) : Number(inv.totalPayment) || 0;
       const newStatus = effectivePaid >= Number(inv.totalPayment)
         ? 'paid'
@@ -582,7 +582,7 @@ export default function App() {
       const updatedInv = { ...inv, status: newStatus, payingNow: effectivePaid, paidAt };
       const updatedList = invoices.map(i => i.invoiceNumber === num ? updatedInv : i);
 
-      // Update linked finance record — inject paidAmount now that payment is confirmed
+      // Compute updated finance list (pure calculation — no state update yet)
       const updatedFinList = finance.map(r => {
         if (r.invoiceId === num) {
           const totalSalaries = Number(r.totalSalaries) || 0;
@@ -595,14 +595,21 @@ export default function App() {
         return r;
       });
       const updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
-      saveFinanceState(updatedFinList, updatedFinItem);
 
+      // Handle recurring clone BEFORE any state updates
       if (newStatus === 'paid') {
-        const cloned = await checkAndCloneRecurring(updatedInv, updatedList, updatedFinList, salaries, nextNum);
-        if (cloned) return;
+        try {
+          const cloned = await checkAndCloneRecurring(updatedInv, updatedList, updatedFinList, salaries, nextNum);
+          if (cloned) return; // checkAndCloneRecurring handles its own saves
+        } catch (err) {
+          console.error('Error cloning recurring invoice:', err);
+          showToast('Payment confirmed but recurring clone failed. Check console.', 'error');
+        }
       }
 
+      // Save invoice + finance together after all async work is done
       saveInvoices(updatedList, updatedInv);
+      if (updatedFinItem) saveFinanceState(updatedFinList, updatedFinItem);
       showToast(`Invoice #${num} confirmed as ${newStatus}`);
     },
     [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, saveFinanceState, showToast]
