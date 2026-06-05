@@ -498,8 +498,27 @@ export default function App() {
       if (!inv) return;
       // Stamp paidAt when marking as paid so the Paid tab filters by actual payment date
       const paidAt = st === 'paid' ? new Date().toISOString() : inv.paidAt;
-      const updatedItem = { ...inv, status: st, ...(paidAt ? { paidAt } : {}) };
+      // Use payingNow if set, otherwise fall back to totalPayment
+      const effectivePaid = Number(inv.payingNow) > 0 ? Number(inv.payingNow) : Number(inv.totalPayment) || 0;
+      const updatedItem = { ...inv, status: st, payingNow: effectivePaid, ...(paidAt ? { paidAt } : {}) };
       const updatedList = invoices.map((i) => (i.invoiceNumber === num ? updatedItem : i));
+
+      // Also update the linked finance record so paidAmount reflects the payment
+      if (st === 'paid' || st === 'partial') {
+        const updatedFinList = finance.map(r => {
+          if (r.invoiceId === num) {
+            const totalSalaries = Number(r.totalSalaries) || 0;
+            const allahShare = r._allahManual
+              ? Number(r.allahShare)
+              : Math.max(0, (effectivePaid - totalSalaries) * 0.05);
+            const profit = effectivePaid - totalSalaries - allahShare - (Number(r.saving) || 0);
+            return { ...r, paidAmount: effectivePaid, allahShare, profit, status: st };
+          }
+          return r;
+        });
+        const updatedFinItem = updatedFinList.find(r => r.invoiceId === num);
+        saveFinanceState(updatedFinList, updatedFinItem);
+      }
 
       if (st === 'paid') {
         const cloned = await checkAndCloneRecurring(updatedItem, updatedList, finance, salaries, nextNum);
@@ -509,7 +528,7 @@ export default function App() {
       saveInvoices(updatedList, updatedItem);
       showToast(`Invoice #${num} marked ${st}`);
     },
-    [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, showToast]
+    [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, saveFinanceState, showToast]
   );
 
   const handleReorderInvoices = useCallback(
@@ -545,24 +564,25 @@ export default function App() {
     async (num) => {
       const inv = invoices.find(i => i.invoiceNumber === num);
       if (!inv) return;
-      const newStatus = Number(inv.payingNow) >= Number(inv.totalPayment)
+      // Use payingNow if set, otherwise fall back to totalPayment (handles invoices created without payingNow)
+      const effectivePaid = Number(inv.payingNow) > 0 ? Number(inv.payingNow) : Number(inv.totalPayment) || 0;
+      const newStatus = effectivePaid >= Number(inv.totalPayment)
         ? 'paid'
-        : Number(inv.payingNow) > 0 ? 'partial' : 'unpaid';
+        : effectivePaid > 0 ? 'partial' : 'unpaid';
       // Stamp paidAt with the exact moment Confirm is clicked
       const paidAt = new Date().toISOString();
-      const updatedInv = { ...inv, status: newStatus, paidAt };
+      const updatedInv = { ...inv, status: newStatus, payingNow: effectivePaid, paidAt };
       const updatedList = invoices.map(i => i.invoiceNumber === num ? updatedInv : i);
 
       // Update linked finance record — inject paidAmount now that payment is confirmed
       const updatedFinList = finance.map(r => {
         if (r.invoiceId === num) {
-          const paidAmount = Number(inv.payingNow) || 0;
           const totalSalaries = Number(r.totalSalaries) || 0;
           const allahShare = r._allahManual
             ? Number(r.allahShare)
-            : Math.max(0, (paidAmount - totalSalaries) * 0.05);
-          const profit = paidAmount - totalSalaries - allahShare - (Number(r.saving) || 0);
-          return { ...r, paidAmount, allahShare, profit, status: newStatus };
+            : Math.max(0, (effectivePaid - totalSalaries) * 0.05);
+          const profit = effectivePaid - totalSalaries - allahShare - (Number(r.saving) || 0);
+          return { ...r, paidAmount: effectivePaid, allahShare, profit, status: newStatus };
         }
         return r;
       });
