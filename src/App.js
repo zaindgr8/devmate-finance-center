@@ -13,7 +13,7 @@ import { ClientsView, ReportsView } from './components/ClientsReports';
 import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
 import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments } from './api';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments, saveBillPayments } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -39,6 +39,7 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [bills, setBills] = useState([]);
   const [billSections, setBillSections] = useState([]);
+  const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } }
   const [personal, setPersonal] = useState({ allahPaid: 0, savedAmount: 0 });
   const [nextNum, setNextNum] = useState(4001);
   const [loading, setLoading] = useState(true);
@@ -92,6 +93,27 @@ export default function App() {
         setEmployees(db.employees || []);
         setBills(db.bills || []);
         setBillSections(db.billSections || []);
+
+        // Load month-wise payments. Migrate legacy paidAmount from bill templates into current month.
+        let loadedPayments = db.billPayments || {};
+        const thisMonthKey = currentYM();
+        const legacyBills = (db.bills || []).filter(b => b.type === 'monthly' && Number(b.paidAmount) > 0);
+        if (legacyBills.length > 0 && !loadedPayments[thisMonthKey]) {
+          const migrated = { ...loadedPayments };
+          migrated[thisMonthKey] = migrated[thisMonthKey] || {};
+          legacyBills.forEach(b => {
+            if (!migrated[thisMonthKey][b.id]) {
+              migrated[thisMonthKey][b.id] = Number(b.paidAmount);
+            }
+          });
+          loadedPayments = migrated;
+          // Strip paidAmount from templates so they're clean
+          const cleanBills = (db.bills || []).map(b => { const { paidAmount, ...rest } = b; return rest; });
+          setBills(cleanBills);
+          await saveMiscBills(cleanBills);
+          await saveBillPayments(loadedPayments);
+        }
+        setBillPayments(loadedPayments);
         setUrgentSalaryIds(db.urgentSalaryIds || []);
         if (db.personal) setPersonal(db.personal);
 
@@ -280,6 +302,12 @@ export default function App() {
     try { await updateSetting('misc_bill_sections', JSON.stringify(v)); }
     catch (err) { console.error(err); }
   }, []);
+
+  const saveBillPaymentsState = useCallback(async (v) => {
+    setBillPayments(v);
+    try { await saveBillPayments(v); }
+    catch (err) { showToast('Failed to save bill payments!', 'error'); }
+  }, [showToast]);
 
   const savePersonalState = useCallback(async (v) => {
     setPersonal(v);
@@ -666,7 +694,7 @@ export default function App() {
       title: 'CLIENTS',
       items: [
         { id: VIEWS.CLIENTS, label: 'Clients', icon: 'users' },
-        { id: VIEWS.FINANCE, label: 'Finance', icon: 'finance' },
+        // { id: VIEWS.FINANCE, label: 'Finance', icon: 'finance' }, // COMMENTED OUT
       ]
     },
     {
@@ -679,8 +707,8 @@ export default function App() {
     {
       title: 'MISC PAYMENTS',
       items: [
-        { id: VIEWS.BILLS, label: 'Regular Bills', icon: 'receipt' },
-        { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' },
+        { id: VIEWS.BILLS, label: 'Payments', icon: 'receipt' },
+        // { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' }, // COMMENTED OUT
       ]
     }
   ];
@@ -872,6 +900,7 @@ export default function App() {
             />
           )}
 
+          {/* Finance section commented out
           {view === VIEWS.FINANCE && (
             <FinanceView
               finance={mergedFinance}
@@ -887,6 +916,7 @@ export default function App() {
               }}
             />
           )}
+          */}
 
           {view === VIEWS.SALARIES && (
             <SalariesView
@@ -1014,6 +1044,7 @@ export default function App() {
             <BillsView
               bills={bills}
               sections={billSections}
+              billPayments={billPayments}
               onUpdateSections={saveBillSectionsState}
               onAdd={(bill) => saveBills([bill, ...bills])}
               onUpdate={(id, patch) => {
@@ -1022,9 +1053,17 @@ export default function App() {
               }}
               onDelete={handleDeleteBill}
               onReorder={(updatedBills) => saveBills(updatedBills)}
+              onPaymentUpdate={(month, billId, paidAmt) => {
+                const updated = {
+                  ...billPayments,
+                  [month]: { ...(billPayments[month] || {}), [billId]: paidAmt },
+                };
+                saveBillPaymentsState(updated);
+              }}
             />
           )}
 
+          {/* Personal section commented out
           {view === VIEWS.PERSONAL && (
             <PersonalView
               finance={finance}
@@ -1032,6 +1071,7 @@ export default function App() {
               onUpdatePersonal={savePersonalState}
             />
           )}
+          */}
         </main>
 
         {view === VIEWS.SALARIES && (showUrgentPanel ? (

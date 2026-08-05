@@ -239,7 +239,7 @@ function EmployeeEditCell({ value, employees = [], onSave }) {
 export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete, onReorder, onPushToNextMonth, urgentSalaryIds = [], onToggleUrgent }) {
   const months = [...new Set(salaries.map((s) => s.month))].sort((a, b) => b.localeCompare(a));
   const [activeMonth, setActiveMonth] = useState(months[0] || currentYM());
-  const [activeCategory, setActiveCategory] = useState('monthly'); // 'monthly' | 'project'
+  const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'monthly' | 'project' | 'paid'
   const [showAddRow, setShowAddRow] = useState(false);
   const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: activeMonth, salaryType: 'monthly' });
   const [dragId, setDragId] = useState(null);
@@ -257,6 +257,9 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
   const isDoneStatus = (s) => s.status === 'paid' || s.status === 'pushed';
 
   const filteredRows = rows.filter((s) => {
+    if (activeCategory === 'all') {
+      return true;
+    }
     if (activeCategory === 'paid') {
       return isDoneStatus(s);
     }
@@ -469,6 +472,7 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
       {/* Category Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '2px solid var(--border)', paddingBottom: 0 }}>
         {[
+          { id: 'all', label: '📋 All', count: rows.length },
           { id: 'monthly', label: 'Salaries (Monthly)', count: rows.filter(s => s.salaryType === 'monthly' && s.status !== 'paid' && s.status !== 'pushed').length },
           { id: 'project', label: 'Salaries (One-Time)', count: rows.filter(s => s.salaryType !== 'monthly' && s.status !== 'paid' && s.status !== 'pushed').length },
           { id: 'paid', label: '✅ Paid', count: rows.filter(s => s.status === 'paid' || s.status === 'pushed').length }

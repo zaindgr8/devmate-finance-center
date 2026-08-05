@@ -13,17 +13,30 @@ const DEFAULT_SECTIONS = [
   { id: 'one-time', label: '📌 One-Time Expense', color: '#f59e0b' },
 ];
 
-const EMPTY_FORM = { name: '', amount: '', paidAmount: '', type: 'monthly', category: 'Other', month: currentYM() };
+const EMPTY_FORM = { name: '', amount: '', type: 'monthly', category: 'Other', month: currentYM() };
 
-function getBillStatus(bill) {
-  const paid = Number(bill.paidAmount) || 0;
-  const total = Number(bill.amount) || 0;
-  if (paid <= 0) return 'pending';
-  if (paid >= total) return 'paid';
+// billPayments: { "YYYY-MM": { "bill-id": paidAmount } }
+function getPaidForMonth(billPayments, month, billId) {
+  return Number((billPayments[month] || {})[billId]) || 0;
+}
+
+function getBillStatus(paidAmt, totalAmt) {
+  if (paidAmt <= 0) return 'pending';
+  if (paidAmt >= totalAmt) return 'paid';
   return 'partial';
 }
 
-export default function BillsView({ bills = [], sections: propSections = [], onUpdateSections, onAdd, onUpdate, onDelete, onReorder }) {
+export default function BillsView({
+  bills = [],
+  sections: propSections = [],
+  billPayments = {},
+  onUpdateSections,
+  onAdd,
+  onUpdate,
+  onDelete,
+  onReorder,
+  onPaymentUpdate,
+}) {
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -35,26 +48,36 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
   const [dragBillId, setDragBillId] = useState(null);
   const [dragOverBillId, setDragOverBillId] = useState(null);
   const [dragSectionId, setDragSectionId] = useState(null);
+  // Inline partial payment editor
+  const [editingPaymentId, setEditingPaymentId] = useState(null);
+  const [paymentDraft, setPaymentDraft] = useState('');
 
-  // If Supabase didn't have any sections, fall back to localStorage (migration step), or defaults
+  const isCurrentMonth = filterMonth === currentYM();
+
+  // Sections fallback
   let activeSections = propSections;
   if (!activeSections || activeSections.length === 0) {
     try {
       const s = localStorage.getItem('misc_bill_sections');
       activeSections = s ? JSON.parse(s) : DEFAULT_SECTIONS;
-      // Auto-migrate to Supabase on first load if missing
       if (onUpdateSections) onUpdateSections(activeSections);
-    } catch { 
-      activeSections = DEFAULT_SECTIONS; 
+    } catch {
+      activeSections = DEFAULT_SECTIONS;
     }
   }
 
-  const updateSections = (ns) => { 
-    if (onUpdateSections) onUpdateSections(ns); 
-    try { localStorage.setItem('misc_bill_sections', JSON.stringify(ns)); } catch(e){} // keep local updated just in case
+  const updateSections = (ns) => {
+    if (onUpdateSections) onUpdateSections(ns);
+    try { localStorage.setItem('misc_bill_sections', JSON.stringify(ns)); } catch (e) {}
   };
 
-  const allMonths = [...new Set([currentYM(), ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month)])].sort().reverse();
+  // Build allMonths: current month + any month that has payments recorded
+  const allMonths = [...new Set([
+    currentYM(),
+    ...Object.keys(billPayments),
+    // also months from one-time bills
+    ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month),
+  ])].sort().reverse();
 
   const getBillsForSection = (sectionId) => {
     const filtered = sectionId === 'one-time'
@@ -63,40 +86,71 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
     return [...filtered].sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
   };
 
-  const monthlyTotal = bills.filter(b => b.type === 'monthly').reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  // Totals — monthly bills always counted, one-time only for the selected month
+  const monthlyTemplateTotal = bills.filter(b => b.type === 'monthly').reduce((s, b) => s + (Number(b.amount) || 0), 0);
   const oneTimeTotal = bills.filter(b => b.type === 'one-time' && b.month === filterMonth).reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const customTotal = activeSections.filter(s => !['monthly', 'one-time'].includes(s.id)).reduce((sum, s) => sum + bills.filter(b => b.type === s.id).reduce((ss, b) => ss + (Number(b.amount) || 0), 0), 0);
-  const totalThisMonth = monthlyTotal + oneTimeTotal + customTotal;
+  const customTotal = activeSections.filter(s => !['monthly', 'one-time'].includes(s.id))
+    .reduce((sum, s) => sum + bills.filter(b => b.type === s.id).reduce((ss, b) => ss + (Number(b.amount) || 0), 0), 0);
+  const totalThisMonth = monthlyTemplateTotal + oneTimeTotal + customTotal;
 
-  const visibleBills = [
-    ...bills.filter(b => b.type === 'monthly'),
-    ...bills.filter(b => b.type === 'one-time' && b.month === filterMonth),
-    ...bills.filter(b => !['monthly', 'one-time'].includes(b.type)),
-  ];
-  const paidTotal = visibleBills.reduce((s, b) => s + Math.min(Number(b.paidAmount) || 0, Number(b.amount) || 0), 0);
-  const pendingTotal = visibleBills.reduce((s, b) => s + Math.max(0, (Number(b.amount) || 0) - Math.min(Number(b.paidAmount) || 0, Number(b.amount) || 0)), 0);
+  // Paid / pending derived from billPayments for the selected month
+  const monthPayments = billPayments[filterMonth] || {};
+  const paidTotal = bills.reduce((s, b) => {
+    const paid = getPaidForMonth(billPayments, filterMonth, b.id);
+    return s + Math.min(paid, Number(b.amount) || 0);
+  }, 0);
+  const pendingTotal = totalThisMonth - paidTotal;
 
   const resetForm = () => { setForm(EMPTY_FORM); setEditId(null); setShowForm(false); };
 
   const handleSave = () => {
     if (!form.name.trim()) return alert('Bill name is required.');
     if (!form.amount || Number(form.amount) <= 0) return alert('Please enter a valid amount.');
-    const payload = { ...form, amount: Number(form.amount), paidAmount: Number(form.paidAmount) || 0 };
+    const payload = { ...form, amount: Number(form.amount) };
+    // Remove any paidAmount that might have been on old records
+    delete payload.paidAmount;
     if (editId) {
       onUpdate(editId, payload);
     } else {
-      onAdd({ ...payload, order: getBillsForSection(form.type).length, id: `bill-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, createdAt: new Date().toISOString() });
+      onAdd({
+        ...payload,
+        order: getBillsForSection(form.type).length,
+        id: `bill-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+        createdAt: new Date().toISOString(),
+      });
     }
     resetForm();
   };
 
   const handleEdit = (bill) => {
-    setForm({ name: bill.name, amount: bill.amount, paidAmount: bill.paidAmount || '', type: bill.type, category: bill.category || 'Other', month: bill.month || currentYM() });
+    setForm({ name: bill.name, amount: bill.amount, type: bill.type, category: bill.category || 'Other', month: bill.month || currentYM() });
     setEditId(bill.id);
     setShowForm(true);
   };
 
-  const handleMarkPaid = (bill) => onUpdate(bill.id, { ...bill, paidAmount: Number(bill.amount) });
+  const handleMarkPaid = (bill) => {
+    if (!isCurrentMonth) return;
+    onPaymentUpdate(filterMonth, bill.id, Number(bill.amount));
+  };
+
+  const handleMarkUnpaid = (bill) => {
+    if (!isCurrentMonth) return;
+    onPaymentUpdate(filterMonth, bill.id, 0);
+  };
+
+  const startEditPayment = (bill) => {
+    if (!isCurrentMonth) return;
+    const current = getPaidForMonth(billPayments, filterMonth, bill.id);
+    setPaymentDraft(current > 0 ? String(current) : '');
+    setEditingPaymentId(bill.id);
+  };
+
+  const savePaymentDraft = (bill) => {
+    const val = Number(paymentDraft) || 0;
+    onPaymentUpdate(filterMonth, bill.id, val);
+    setEditingPaymentId(null);
+    setPaymentDraft('');
+  };
 
   // Drag handlers
   const handleDragStart = (e, billId, sectionId) => {
@@ -144,8 +198,8 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
     if (window.confirm('Delete this section? Bills in it won\'t be lost.')) updateSections(activeSections.filter(s => s.id !== sectionId));
   };
 
-  const statusBadge = (bill) => {
-    const st = getBillStatus(bill);
+  const statusBadge = (paidAmt, totalAmt) => {
+    const st = getBillStatus(paidAmt, totalAmt);
     const map = {
       paid: { bg: 'rgba(16,185,129,0.12)', color: '#10b981', label: '✓ Paid' },
       partial: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: '◑ Partial' },
@@ -157,6 +211,12 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
 
   const cardStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 20px', boxShadow: 'var(--shadow)' };
 
+  // Format month label nicely e.g. "2026-08" → "Aug 2026"
+  const formatMonth = (ym) => {
+    const [y, m] = ym.split('-');
+    return new Date(Number(y), Number(m) - 1).toLocaleString('default', { month: 'short', year: 'numeric' });
+  };
+
   return (
     <div className="animate-fade-in">
       {/* Header */}
@@ -166,19 +226,45 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
           <div style={{ fontSize: 13, color: 'var(--text-light)' }}>Regular bills &amp; expenses · deducted from net profit</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="form-select" style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600 }}>
-            {allMonths.map(m => <option key={m} value={m}>{m}</option>)}
+          <select
+            value={filterMonth}
+            onChange={e => setFilterMonth(e.target.value)}
+            className="form-select"
+            style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600 }}
+          >
+            {allMonths.map(m => (
+              <option key={m} value={m}>{formatMonth(m)}{m === currentYM() ? ' (Current)' : ''}</option>
+            ))}
           </select>
-          <button onClick={() => { resetForm(); setShowForm(true); }} style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}>
+          {!isCurrentMonth && (
+            <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 6, padding: '4px 12px', background: 'rgba(99,102,241,0.12)', color: '#6366f1' }}>
+              📅 Viewing History
+            </span>
+          )}
+          <button
+            onClick={() => { resetForm(); setShowForm(true); }}
+            style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}
+          >
             <Icon name="plus" size={14} /> Add Bill
           </button>
         </div>
       </div>
 
+      {/* Month banner for history view */}
+      {!isCurrentMonth && (
+        <div style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(99,102,241,0.03))', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 12, padding: '12px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 18 }}>📅</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 14, color: '#6366f1' }}>Viewing {formatMonth(filterMonth)}</div>
+            <div style={{ fontSize: 12, color: 'var(--text-light)' }}>This is a historical record — payments are read-only. Switch to current month to make changes.</div>
+          </div>
+        </div>
+      )}
+
       {/* Summary Cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 14, marginBottom: 28 }}>
         {[
-          { label: 'Monthly Bills', val: monthlyTotal, color: '#ef4444' },
+          { label: 'Monthly Bills', val: monthlyTemplateTotal, color: '#ef4444' },
           { label: 'One-Time', val: oneTimeTotal, color: '#f59e0b' },
           { label: 'Total Amount', val: totalThisMonth, color: '#8b5cf6' },
           { label: 'Paid Amount', val: paidTotal, color: '#10b981' },
@@ -205,10 +291,6 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
               <input className="form-input" type="number" min="0" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Paid Amount (AED)</div>
-              <input className="form-input" type="number" min="0" value={form.paidAmount} onChange={e => setForm({ ...form, paidAmount: e.target.value })} placeholder="0.00" />
             </div>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Section</div>
@@ -285,14 +367,16 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
               <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '10px 0 4px', fontStyle: 'italic' }}>No bills in this section</div>
             )}
             {items.map(bill => {
-              const status = getBillStatus(bill);
-              const paidAmt = Number(bill.paidAmount) || 0;
               const totalAmt = Number(bill.amount) || 0;
+              const paidAmt = getPaidForMonth(billPayments, filterMonth, bill.id);
+              const status = getBillStatus(paidAmt, totalAmt);
               const isDragTarget = dragOverBillId === bill.id && dragSectionId === section.id && dragBillId !== bill.id;
+              const isEditingThisPayment = editingPaymentId === bill.id;
+
               return (
                 <div
                   key={bill.id}
-                  draggable
+                  draggable={isCurrentMonth}
                   onDragStart={e => handleDragStart(e, bill.id, section.id)}
                   onDragOver={e => handleDragOver(e, bill.id)}
                   onDragEnd={() => { setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); }}
@@ -301,24 +385,25 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
                     padding: '13px 16px', background: 'var(--card)',
                     border: isDragTarget ? `2px solid var(--primary)` : `1px solid ${status === 'paid' ? 'rgba(16,185,129,0.2)' : 'var(--border)'}`,
                     borderRadius: 12, marginBottom: 8,
-                    cursor: 'grab', transition: 'box-shadow 0.2s, opacity 0.2s',
+                    cursor: isCurrentMonth ? 'grab' : 'default',
+                    transition: 'box-shadow 0.2s, opacity 0.2s',
                     opacity: dragBillId === bill.id ? 0.45 : 1,
                   }}
                   onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-md)'}
                   onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
                 >
                   {/* Drag handle */}
-                  <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: 'grab', userSelect: 'none' }}>⠿</div>
+                  <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: isCurrentMonth ? 'grab' : 'default', userSelect: 'none' }}>⠿</div>
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       {bill.name}
-                      {statusBadge(bill)}
+                      {statusBadge(paidAmt, totalAmt)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                       <span style={{ background: 'var(--border-light)', borderRadius: 4, padding: '1px 8px' }}>{bill.category || 'Other'}</span>
                       {bill.type === 'one-time' && bill.month && (
-                        <span style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', borderRadius: 4, padding: '1px 8px', fontWeight: 600 }}>{bill.month}</span>
+                        <span style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', borderRadius: 4, padding: '1px 8px', fontWeight: 600 }}>{formatMonth(bill.month)}</span>
                       )}
                       {paidAmt > 0 && paidAmt < totalAmt && (
                         <span style={{ color: '#f59e0b' }}>Paid AED {paidAmt.toLocaleString()} of {totalAmt.toLocaleString()}</span>
@@ -326,24 +411,72 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
                     </div>
                   </div>
 
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 15, color: section.color }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                    {paidAmt > 0 && (
-                      <div style={{ fontSize: 11, color: '#10b981', marginTop: 2 }}>✓ Paid AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                    )}
-                  </div>
+                  {/* Inline partial payment editor */}
+                  {isEditingThisPayment ? (
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+                      <input
+                        autoFocus
+                        type="number"
+                        min="0"
+                        max={totalAmt}
+                        value={paymentDraft}
+                        onChange={e => setPaymentDraft(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') savePaymentDraft(bill); if (e.key === 'Escape') setEditingPaymentId(null); }}
+                        style={{ width: 100, padding: '5px 10px', borderRadius: 6, border: '1.5px solid var(--primary)', background: 'var(--input-bg)', color: 'inherit', fontFamily: 'inherit', fontSize: 13, outline: 'none' }}
+                        placeholder="0.00"
+                      />
+                      <button onClick={() => savePaymentDraft(bill)} style={{ padding: '5px 10px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit' }}>✓</button>
+                      <button onClick={() => setEditingPaymentId(null)} style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: section.color }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                      {paidAmt > 0 && (
+                        <div style={{ fontSize: 11, color: '#10b981', marginTop: 2 }}>✓ Paid AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                      )}
+                    </div>
+                  )}
 
-                  <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
-                    {status !== 'paid' && (
-                      <button onClick={() => handleMarkPaid(bill)} title="Mark as Paid" style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#10b981', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-                        Mark Paid
-                      </button>
-                    )}
-                    <button onClick={() => handleEdit(bill)} title="Edit" style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: 'var(--text-mid)', display: 'flex', alignItems: 'center' }}>
-                      <Icon name="edit" size={12} />
-                    </button>
-                    <button onClick={() => { if (window.confirm(`Delete "${bill.name}"?`)) onDelete(bill.id); }} title="Delete" style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: '5px 8px', fontSize: 18, lineHeight: 1 }}>×</button>
-                  </div>
+                  {/* Action buttons */}
+                  {!isEditingThisPayment && (
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      {isCurrentMonth && status !== 'paid' && (
+                        <>
+                          <button
+                            onClick={() => handleMarkPaid(bill)}
+                            title="Mark as Fully Paid"
+                            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#10b981', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                          >
+                            Mark Paid
+                          </button>
+                          <button
+                            onClick={() => startEditPayment(bill)}
+                            title="Enter partial payment"
+                            style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#f59e0b', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                          >
+                            Partial
+                          </button>
+                        </>
+                      )}
+                      {isCurrentMonth && status === 'paid' && (
+                        <button
+                          onClick={() => handleMarkUnpaid(bill)}
+                          title="Mark as Unpaid"
+                          style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#ef4444', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                        >
+                          Undo
+                        </button>
+                      )}
+                      {isCurrentMonth && (
+                        <>
+                          <button onClick={() => handleEdit(bill)} title="Edit" style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: 'var(--text-mid)', display: 'flex', alignItems: 'center' }}>
+                            <Icon name="edit" size={12} />
+                          </button>
+                          <button onClick={() => { if (window.confirm(`Delete "${bill.name}"?`)) onDelete(bill.id); }} title="Delete" style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: '5px 8px', fontSize: 18, lineHeight: 1 }}>×</button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -352,32 +485,26 @@ export default function BillsView({ bills = [], sections: propSections = [], onU
       })}
 
       {/* Add Section */}
-      {showAddSection ? (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, marginBottom: 24 }}>
-          <input
-            autoFocus
-            value={newSectionLabel}
-            onChange={e => setNewSectionLabel(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleAddSection(); if (e.key === 'Escape') setShowAddSection(false); }}
-            placeholder="Section name e.g. 💼 Business Expenses"
-            style={{ flex: 1, padding: '9px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'inherit', fontFamily: 'inherit', fontSize: 13, outline: 'none' }}
-          />
-          <button onClick={handleAddSection} style={{ padding: '9px 18px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>Add</button>
-          <button onClick={() => setShowAddSection(false)} style={{ padding: '9px 14px', background: 'none', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-        </div>
-      ) : (
-        <button onClick={() => setShowAddSection(true)} style={{ marginTop: 4, marginBottom: 24, background: 'none', border: '1.5px dashed var(--border)', borderRadius: 10, padding: '10px 20px', cursor: 'pointer', color: 'var(--text-light)', fontSize: 13, fontFamily: 'inherit', width: '100%' }}>
-          + Add New Section
-        </button>
+      {isCurrentMonth && (
+        showAddSection ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, marginBottom: 24 }}>
+            <input
+              autoFocus
+              value={newSectionLabel}
+              onChange={e => setNewSectionLabel(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleAddSection(); if (e.key === 'Escape') setShowAddSection(false); }}
+              placeholder="Section name e.g. 💼 Business Expenses"
+              style={{ flex: 1, padding: '9px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'inherit', fontFamily: 'inherit', fontSize: 13, outline: 'none' }}
+            />
+            <button onClick={handleAddSection} style={{ padding: '9px 18px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>Add</button>
+            <button onClick={() => setShowAddSection(false)} style={{ padding: '9px 14px', background: 'none', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+          </div>
+        ) : (
+          <button onClick={() => setShowAddSection(true)} style={{ marginTop: 4, marginBottom: 24, background: 'none', border: '1.5px dashed var(--border)', borderRadius: 10, padding: '10px 20px', cursor: 'pointer', color: 'var(--text-light)', fontSize: 13, fontFamily: 'inherit', width: '100%' }}>
+            + Add New Section
+          </button>
+        )
       )}
-
-      {/* Footer note */}
-      {/* {bills.length > 0 && (
-        <div style={{ padding: '14px 20px', background: 'linear-gradient(135deg, rgba(239,68,68,0.06), rgba(239,68,68,0.02))', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-          <div style={{ fontSize: 12, color: 'var(--text-mid)', fontWeight: 500 }}>💡 Monthly bills are automatically deducted from net profit in Reports each month.</div>
-          <div style={{ fontWeight: 700, color: '#ef4444', fontSize: 14 }}>−AED {monthlyTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })} / mo</div>
-        </div>
-      )} */}
     </div>
   );
 }

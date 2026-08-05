@@ -244,7 +244,7 @@ export default function EmployeesView({
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Department</div>
               <select value={form.department} onChange={e => set('department', e.target.value)} className="form-select">
-                {['Management', 'Web Development', 'App Development', 'Designing', 'Digital Marketing', 'BlockChain', 'AI'].map(o => <option key={o}>{o}</option>)}
+                {['Management', 'Web Development', 'App Development', 'Designing', 'Digital Marketing', 'BlockChain', 'AI', 'IOT',].map(o => <option key={o}>{o}</option>)}
               </select>
             </div>
             <div>

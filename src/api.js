@@ -52,6 +52,12 @@ export async function fetchAllData() {
     sectionsData = billSectionsSet ? JSON.parse(billSectionsSet.value || '[]') : [];
   } catch (_) { sectionsData = []; }
 
+  const billPaymentsSet = (settings || []).find(s => s.key === 'misc_bill_payments');
+  let billPaymentsData = {};
+  try {
+    billPaymentsData = billPaymentsSet ? JSON.parse(billPaymentsSet.value || '{}') : {};
+  } catch (_) { billPaymentsData = {}; }
+
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
   const lastRolloverSet = (settings || []).find(s => s.key === 'last_rollover');
   const invoiceOrderSet = (settings || []).find(s => s.key === 'invoice_order');
@@ -116,6 +122,7 @@ export async function fetchAllData() {
     employees: (employees || []).map(toCamel),
     bills: billsData.map(toCamel),
     billSections: sectionsData,
+    billPayments: billPaymentsData,
     personal: personalData,
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
     lastRollover: lastRolloverSet ? lastRolloverSet.value : null,
@@ -233,4 +240,13 @@ export async function savePersonalPayments(personalObj) {
     .from('app_settings')
     .upsert({ key: 'personal_payments', value }, { onConflict: 'key' });
   if (error) console.error('Error saving personal payments:', error);
+}
+
+// Save month-wise bill payments map: { "YYYY-MM": { "bill-id": paidAmount } }
+export async function saveBillPayments(paymentsObj) {
+  const value = JSON.stringify(paymentsObj);
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'misc_bill_payments', value }, { onConflict: 'key' });
+  if (error) console.error('Error saving bill payments:', error);
 }
