@@ -169,6 +169,7 @@ export default function FinanceView({ finance, onUpdate, onAdd, onDelete, curren
     updateRow(row.id, updated);
   };
 
+  // eslint-disable-next-line no-unused-vars
   const handleAllahSave = (row, val) => {
     const updated = { ...row, allahShare: Number(val) || 0, _allahManual: true };
     updated.profit = calcProfit(updated);

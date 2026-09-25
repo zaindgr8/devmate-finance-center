@@ -4,6 +4,7 @@ function fmt(n) {
   return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// eslint-disable-next-line no-unused-vars
 function ProgressBar({ paid, total, color }) {
   const pct = total > 0 ? Math.min(100, (paid / total) * 100) : 0;
   return (
@@ -40,7 +41,9 @@ export default function PersonalView({ finance = [], personal = { allahPaid: 0, 
   const allahPaid = Number(personal.allahPaid) || 0;
   const savedAmount = Number(personal.savedAmount) || 0;
 
+  // eslint-disable-next-line no-unused-vars
   const allahRemaining = Math.max(0, allahShareTotal - allahPaid);
+  // eslint-disable-next-line no-unused-vars
   const savingRemaining = Math.max(0, savingTotal - savedAmount);
 
   const allahStatus = allahPaid >= allahShareTotal && allahShareTotal > 0 ? 'paid' : allahPaid > 0 ? 'partial' : 'pending';
@@ -60,6 +63,7 @@ export default function PersonalView({ finance = [], personal = { allahPaid: 0, 
     partial: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: '◑ Partially Paid' },
     pending: { bg: 'rgba(139,92,246,0.12)', color: '#8b5cf6', label: '● Pending' },
   };
+  // eslint-disable-next-line no-unused-vars
   const savingColors = {
     saved: { bg: 'rgba(16,185,129,0.12)', color: '#10b981', label: '✓ Fully Saved' },
     partial: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: '◑ Partially Saved' },

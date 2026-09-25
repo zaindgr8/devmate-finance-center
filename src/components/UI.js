@@ -1,5 +1,4 @@
 import React from 'react';
-import Icon from './Icon';
 
 /* ── Badge ── */
 export function Badge({ children, color }) {

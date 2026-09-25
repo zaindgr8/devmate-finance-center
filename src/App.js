@@ -4,13 +4,13 @@ import Dashboard from './components/Dashboard';
 import InvoiceForm from './components/InvoiceForm';
 import InvoiceHistory from './components/InvoiceHistory';
 import InvoicePreview from './components/InvoicePreview';
-import FinanceView from './components/FinanceView';
+// import FinanceView from './components/FinanceView';
 import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
 import EmployeesView from './components/EmployeesView';
 import BillsView from './components/BillsView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
-import PersonalView from './components/PersonalView';
+// import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
 import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
@@ -46,6 +46,7 @@ export default function App() {
   const [bills, setBills] = useState([]);
   const [billSections, setBillSections] = useState([]);
   const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } }
+  // eslint-disable-next-line no-unused-vars
   const [personal, setPersonal] = useState({ allahPaid: 0, savedAmount: 0 });
   const [nextNum, setNextNum] = useState(4001);
   const [loading, setLoading] = useState(true);
@@ -369,6 +370,7 @@ export default function App() {
     catch (err) { showToast('Failed to save bill payments!', 'error'); }
   }, [showToast]);
 
+  // eslint-disable-next-line no-unused-vars
   const savePersonalState = useCallback(async (v) => {
     setPersonal(v);
     try { await savePersonalPayments(v); }
@@ -736,6 +738,7 @@ export default function App() {
   );
 
   // Merge standalone salary records into finance rows so Finance Ledger reflects them
+  // eslint-disable-next-line no-unused-vars
   const mergedFinance = useMemo(() => {
     return finance.map(row => {
       // find all standalone salaries linked to this invoice
