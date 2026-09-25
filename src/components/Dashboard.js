@@ -4,6 +4,7 @@ import { Badge, Btn } from './UI';
 import {
   fmtDate, fmtCurrency, fmtAED, fmtMonth, today, currentYM, prevYM, toAED,
   invoiceReceived, invoiceOutstanding, isInvoiceOverdue, daysBetween, billsSummary, statusColor,
+  expensesPaidIn, expenseCategory,
 } from '../utils/helpers';
 
 // Month an invoice's money was received: payment date when known, else invoice date
@@ -99,7 +100,7 @@ function RevenueChart({ data }) {
 }
 
 export default function Dashboard({
-  invoices = [], clients = [], salaries = [], bills = [], billPayments = {}, urgentSalaryIds = [],
+  invoices = [], clients = [], salaries = [], bills = [], billPayments = {}, expenses = [], urgentSalaryIds = [],
   onNew, onView, onNavigate, onConfirmPayment,
 }) {
   const todayStr = today();
@@ -124,7 +125,8 @@ export default function Dashboard({
     const salariesPaidThis = salaries.filter(s => s.month === ym).reduce((s, r) => s + (Number(r.paidAmount) || 0), 0);
 
     const billSum = billsSummary(bills, billPayments, ym);
-    const net = receivedThis - salariesPaidThis - billSum.paid;
+    const expensesPaid = expensesPaidIn(expenses, ym);
+    const net = receivedThis - salariesPaidThis - billSum.paid - expensesPaid;
 
     // 6-month trend
     const months = [];
@@ -148,9 +150,9 @@ export default function Dashboard({
 
     return {
       receivedThis, receivedLast, outstanding, overdue, overdueAmt, outstandingCount: outstandingList.length,
-      salariesDue, dueSalariesCount: dueSalaries.length, billSum, net, trend, topClients, totalReceivedAll,
+      salariesDue, dueSalariesCount: dueSalaries.length, billSum, net, trend, topClients, totalReceivedAll, expensesPaid,
     };
-  }, [invoices, salaries, bills, billPayments, ym, lastYm, todayStr]);
+  }, [invoices, salaries, bills, billPayments, expenses, ym, lastYm, todayStr]);
 
   const delta = stats.receivedLast > 0 ? ((stats.receivedThis - stats.receivedLast) / stats.receivedLast) * 100 : null;
 
@@ -175,6 +177,19 @@ export default function Dashboard({
         sub: `Awaiting payment confirmation · ${fmtCurrency(inv.payingNow || inv.totalPayment, inv.currency)}`,
         action: { label: 'Confirm', fn: () => onConfirmPayment(inv.invoiceNumber) },
       }));
+    // Expenses overdue or due within 7 days
+    expenses
+      .filter(e => e.status !== 'paid' && e.dueDate && daysBetween(todayStr, e.dueDate) <= 7)
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+      .forEach(e => {
+        const d = daysBetween(todayStr, e.dueDate);
+        items.push({
+          key: `exp-${e.id}`, tone: d < 0 ? 'danger' : 'warning', icon: d < 0 ? 'alert' : 'calendar',
+          title: `${expenseCategory(e.category).emoji} ${e.title}`,
+          sub: `${fmtCurrency(e.amount, e.currency)} · ${d < 0 ? `overdue by ${-d} day(s)` : d === 0 ? 'due today' : `due in ${d} day(s)`}`,
+          action: { label: 'Open', fn: () => onNavigate('expenses') },
+        });
+      });
     const urgent = salaries.filter(s => urgentSalaryIds.includes(s.id) && s.status !== 'paid' && s.status !== 'pushed');
     if (urgent.length) {
       const amt = urgent.reduce((s, r) => s + Math.max(0, (Number(r.totalSalary) || 0) - (Number(r.paidAmount) || 0)), 0);
@@ -194,7 +209,7 @@ export default function Dashboard({
       });
     }
     return items;
-  }, [stats, invoices, salaries, urgentSalaryIds, todayStr, ym, onView, onConfirmPayment, onNavigate]);
+  }, [stats, invoices, salaries, expenses, urgentSalaryIds, todayStr, ym, onView, onConfirmPayment, onNavigate]);
 
   const recent = invoices.slice(0, 6);
 
@@ -224,7 +239,7 @@ export default function Dashboard({
             <span>Net this month</span>
             <b>{fmtAED(stats.net, 0)}</b>
           </div>
-          <div className="hero-foot">Received − salaries paid − bills paid (converted to AED)</div>
+          <div className="hero-foot">Received − salaries − bills − expenses paid (in AED)</div>
         </div>
 
         <div className="kpi-grid">

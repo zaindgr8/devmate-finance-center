@@ -506,3 +506,53 @@ export function billsSummary(bills = [], billPayments = {}, month) {
   const paid = list.reduce((s, b) => s + Math.min(Number(payments[b.id]) || 0, Number(b.amount) || 0), 0);
   return { list, total, paid, pending: Math.max(0, total - paid) };
 }
+
+/* ── Expenses (fines, renewals, government fees…) ── */
+export const EXPENSE_CATEGORIES = [
+  { id: 'fine', label: 'Fines & Penalties', emoji: '🚨' },
+  { id: 'license', label: 'Company / Trade License', emoji: '🏢' },
+  { id: 'visa', label: 'Visa & Immigration', emoji: '🛂' },
+  { id: 'vehicle', label: 'Vehicle (Registration, Salik…)', emoji: '🚗' },
+  { id: 'insurance', label: 'Insurance', emoji: '🛡️' },
+  { id: 'government', label: 'Government & Legal Fees', emoji: '🏛️' },
+  { id: 'tax', label: 'Tax & VAT', emoji: '🧾' },
+  { id: 'rent', label: 'Office & Ejari', emoji: '🔑' },
+  { id: 'software', label: 'Domains, Hosting & Software', emoji: '🌐' },
+  { id: 'equipment', label: 'Equipment', emoji: '💻' },
+  { id: 'travel', label: 'Travel', emoji: '✈️' },
+  { id: 'other', label: 'Other', emoji: '📌' },
+];
+
+export function expenseCategory(id) {
+  return EXPENSE_CATEGORIES.find((c) => c.id === id) || EXPENSE_CATEGORIES[EXPENSE_CATEGORIES.length - 1];
+}
+
+// Shift a YYYY-MM-DD date by N months, clamping to the month's last day (Jan 31 + 1m → Feb 28)
+export function addMonthsToDate(dateStr, months) {
+  const [y, m, d] = (dateStr || today()).split('-').map(Number);
+  const target = new Date(y, m - 1 + months, 1);
+  const maxDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return localDateStr(new Date(target.getFullYear(), target.getMonth(), Math.min(d, maxDay)));
+}
+
+export function nextRenewalDate(dateStr, repeat) {
+  if (repeat === 'monthly') return addMonthsToDate(dateStr, 1);
+  if (repeat === 'quarterly') return addMonthsToDate(dateStr, 3);
+  if (repeat === 'yearly') return addMonthsToDate(dateStr, 12);
+  return null;
+}
+
+// 'paid' | 'overdue' | 'due-soon' (≤ 14 days) | 'upcoming' | 'unscheduled'
+export function expenseState(exp, todayStr = today()) {
+  if (exp.status === 'paid') return 'paid';
+  if (!exp.dueDate) return 'unscheduled';
+  if (exp.dueDate < todayStr) return 'overdue';
+  return daysBetween(todayStr, exp.dueDate) <= 14 ? 'due-soon' : 'upcoming';
+}
+
+// Paid expenses count in the month they were paid
+export function expensesPaidIn(expenses = [], month) {
+  return expenses
+    .filter((e) => e.status === 'paid' && (e.paidDate || '').slice(0, 7) === month)
+    .reduce((s, e) => s + toAED(e.amount, e.currency), 0);
+}

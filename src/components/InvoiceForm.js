@@ -1,7 +1,14 @@
 import React, { useState, useMemo } from 'react';
 import Icon from './Icon';
 import { Btn, Input, TextArea, Select } from './UI';
-import { today, fmtCurrency, CURRENCIES, nowLocalDateTime } from '../utils/helpers';
+import { today, fmtCurrency, CURRENCIES, nowLocalDateTime, localDateStr } from '../utils/helpers';
+
+// Due date = invoice date + N days
+const plusDays = (dateStr, n) => {
+  const d = new Date(`${dateStr || today()}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  return localDateStr(d);
+};
 
 export default function InvoiceForm({ clients, finance, employees = [], editInv, draftInv, onSave, onCancel }) {
   const [clientSearch, setClientSearch] = useState('');
@@ -108,7 +115,7 @@ export default function InvoiceForm({ clients, finance, employees = [], editInv,
           <Icon name="back" />
         </button>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>
-          {editInv ? `Edit #${editInv.invoiceNumber}` : draftInv ? 'Duplicate Invoice' : 'Create Invoice'}
+          {editInv ? `Edit #${editInv.invoiceNumber}` : draftInv?.items ? 'Duplicate Invoice' : draftInv?.clientName ? `New Invoice · ${draftInv.clientName}` : 'Create Invoice'}
         </h1>
       </div>
 
@@ -180,6 +187,19 @@ export default function InvoiceForm({ clients, finance, employees = [], editInv,
           <Input label="Due Date" type="date" value={form.dueDate} onChange={(e) => set('dueDate', e.target.value)} />
           <Select label="Currency" value={form.currency} onChange={(e) => set('currency', e.target.value)} options={CURRENCIES} />
         </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: -4 }}>
+          <span className="form-label" style={{ marginBottom: 0, marginRight: 4 }}>Payment terms</span>
+          {[['On receipt', 0], ['7 days', 7], ['15 days', 15], ['30 days', 30]].map(([label, n]) => {
+            const val = n === 0 ? '' : plusDays(form.date, n);
+            const active = (form.dueDate || '') === val;
+            return (
+              <button key={label} type="button" className="chip-btn" onClick={() => set('dueDate', val)}
+                style={active ? { borderColor: 'var(--primary)', color: 'var(--primary)', background: 'var(--primary-soft)' } : undefined}>
+                {label}
+              </button>
+            );
+          })}
+        </div>
 
         {/* Schedule Invoice Toggle */}
         <div style={{ marginTop: 18, padding: '14px 18px', borderRadius: 10, border: `1.5px solid ${isScheduled ? 'rgba(124,58,237,0.4)' : 'var(--border)'}`, background: isScheduled ? 'rgba(124,58,237,0.05)' : 'transparent', transition: 'all 0.2s' }}>
@@ -224,10 +244,14 @@ export default function InvoiceForm({ clients, finance, employees = [], editInv,
       <div className="section-card">
         <h3 className="section-title">Line Items</h3>
         {form.items.map((it, idx) => (
-          <div key={idx} className="item-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 80px 120px 40px', gap: 10, alignItems: 'end', marginBottom: 8 }}>
+          <div key={idx} className="item-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 80px 120px 110px 40px', gap: 10, alignItems: 'end', marginBottom: 8 }}>
             <Input label={idx === 0 ? 'Description' : undefined} value={it.description} onChange={(e) => setItem(idx, 'description', e.target.value)} placeholder="Service description" />
             <Input label={idx === 0 ? 'Qty' : undefined} type="number" value={it.qty} onChange={(e) => setItem(idx, 'qty', e.target.value)} min="1" />
             <Input label={idx === 0 ? 'Rate' : undefined} type="number" value={it.rate} onChange={(e) => setItem(idx, 'rate', e.target.value)} min="0" />
+            <div className="form-group">
+              {idx === 0 && <label className="form-label">Amount</label>}
+              <div className="num" style={{ padding: '10px 0', fontWeight: 600, fontSize: 13 }}>{fmtCurrency((Number(it.qty) || 0) * (Number(it.rate) || 0), form.currency)}</div>
+            </div>
             <div className="form-group">
               {form.items.length > 1 && (
                 <button
@@ -241,9 +265,14 @@ export default function InvoiceForm({ clients, finance, employees = [], editInv,
             </div>
           </div>
         ))}
-        <Btn variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, items: [...f.items, { ...empty }] }))}>
-          <Icon name="plus" size={14} /> Add Item
-        </Btn>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+          <Btn variant="ghost" size="sm" onClick={() => setForm((f) => ({ ...f, items: [...f.items, { ...empty }] }))}>
+            <Icon name="plus" size={14} /> Add Item
+          </Btn>
+          <div style={{ fontSize: 13, color: 'var(--text-light)' }}>
+            Total <b className="num" style={{ fontSize: 16, color: 'var(--text)', marginLeft: 8 }}>{fmtCurrency(total, form.currency)}</b>
+          </div>
+        </div>
       </div>
 
       {/* Payment Summary */}

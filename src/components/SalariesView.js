@@ -1,962 +1,425 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { nextYM, fmtMonth, currentYM, downloadCSV } from '../utils/helpers';
+import React, { useMemo, useState } from 'react';
+import Icon from './Icon';
+import { Btn, Avatar, Segmented, Drawer, Empty } from './UI';
+import { nextYM, prevYM, fmtMonth, currentYM, fmtAED, downloadCSV } from '../utils/helpers';
 
-const EMPTY_SALARY_ROW = {
-  employeeName: '',
-  projectName: '',
-  totalSalary: 0,
-  paidAmount: 0,
-  status: 'unpaid',
-  salaryType: 'project'
+const isOpen = (s) => s.status !== 'paid' && s.status !== 'pushed';
+const remainingOf = (s) => (isOpen(s) ? Math.max(0, (Number(s.totalSalary) || 0) - (Number(s.paidAmount) || 0)) : 0);
+const statusFor = (total, paid) => (paid >= total && total > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid');
+
+const PILL = {
+  paid: { cls: 'badge-green', label: 'Paid' },
+  pushed: { cls: 'badge-green', label: 'Settled' },
+  partial: { cls: 'badge-yellow', label: 'Partial' },
+  unpaid: { cls: 'badge-red', label: 'Unpaid' },
 };
 
-function EditCell({ value, onSave, prefix = '', type = 'number', style = {} }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(value);
+const EMPTY_ROW = { employeeName: '', projectName: '', invoiceId: '', salaryType: 'monthly', totalSalary: '', paidAmount: '' };
 
-  useEffect(() => { setVal(value); }, [value]);
+export default function SalariesView({
+  salaries = [], invoices = [], clients = [], employees = [],
+  onAdd, onUpdate, onDelete, onPushToNextMonth, urgentSalaryIds = [], onToggleUrgent,
+}) {
+  const thisMonth = currentYM();
+  const [month, setMonth] = useState(thisMonth);
+  const [status, setStatus] = useState('due'); // due | paid | all
+  const [type, setType] = useState('all'); // all | monthly | project
+  const [q, setQ] = useState('');
+  const [expanded, setExpanded] = useState({});
+  const [payFor, setPayFor] = useState(null); // employee name with open pay box
+  const [payAmt, setPayAmt] = useState('');
+  const [editor, setEditor] = useState(null); // { mode: 'new' | 'edit', row }
 
-  if (editing) {
-    return (
-      <input
-        autoFocus
-        type={type}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onBlur={() => { setEditing(false); onSave(val); }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { setEditing(false); onSave(val); }
-          if (e.key === 'Escape') { setEditing(false); setVal(value); }
-        }}
-        style={{
-          width: '100%', minWidth: 80, padding: '4px 8px',
-          border: '1.5px solid var(--primary)', borderRadius: 6,
-          fontSize: 13, fontFamily: 'Poppins, sans-serif',
-          background: '#fff', color: 'var(--text)',
-          ...style,
-        }}
-      />
-    );
-  }
+  const monthRows = useMemo(() => salaries.filter((s) => s.month === month), [salaries, month]);
 
-  return (
-    <span
-      onClick={() => setEditing(true)}
-      title="Click to edit"
-      style={{
-        cursor: 'pointer', display: 'inline-block', minWidth: 60,
-        padding: '2px 4px', borderRadius: 4,
-        borderBottom: '1px dashed var(--border)',
-        transition: 'background 0.15s',
-        ...style,
-      }}
-      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-soft)'}
-      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-    >
-      {prefix}{typeof value === 'number' ? value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value}
-    </span>
-  );
-}
+  // Month summary (ignores filters so the numbers always describe the whole month)
+  const summary = useMemo(() => {
+    const total = monthRows.reduce((s, r) => s + (Number(r.totalSalary) || 0), 0);
+    const paid = monthRows.reduce((s, r) => s + (Number(r.paidAmount) || 0), 0);
+    const remaining = monthRows.reduce((s, r) => s + remainingOf(r), 0);
+    const owed = new Set(monthRows.filter((r) => remainingOf(r) > 0).map((r) => r.employeeName)).size;
+    return { total, paid, remaining, owed };
+  }, [monthRows]);
 
-function StatusPill({ status }) {
-  const map = { paid: ['#0D9F5F', '#ECFDF3'], partial: ['#B45309', '#FFFBEB'], unpaid: ['#DC143C', '#FEF2F4'] };
-  const [clr, bg] = map[status] || map.unpaid;
-  return (
-    <span style={{
-      background: bg, color: clr, borderRadius: 20, padding: '3px 10px',
-      fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1,
-      display: 'inline-block'
-    }}>
-      {status}
-    </span>
-  );
-}
+  // Anything still unpaid from earlier months
+  const arrears = useMemo(() => {
+    const list = salaries.filter((s) => s.month < month && remainingOf(s) > 0);
+    const months = [...new Set(list.map((s) => s.month))].sort();
+    return { amount: list.reduce((s, r) => s + remainingOf(r), 0), count: list.length, oldest: months[0] };
+  }, [salaries, month]);
 
-function InvoiceEditCell({ value, invoices = [], onSave }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(value || '');
-
-  useEffect(() => { setVal(value || ''); }, [value]);
-
-  if (editing) {
-    return (
-      <select
-        autoFocus
-        value={val}
-        onChange={(e) => {
-          setVal(e.target.value);
-          setEditing(false);
-          onSave(e.target.value);
-        }}
-        onBlur={() => setEditing(false)}
-        style={{ width: '100%', padding: '4px 8px', border: '1.5px solid var(--primary)', borderRadius: 6, fontSize: 13, fontFamily: 'Poppins, sans-serif' }}
-      >
-        <option value="">-- No Invoice --</option>
-        {invoices.map(inv => (
-          <option key={inv.invoiceNumber} value={inv.invoiceNumber}>
-            #{inv.invoiceNumber} - {inv.clientName}
-          </option>
-        ))}
-      </select>
-    );
-  }
-
-  return (
-    <span onClick={() => setEditing(true)} title="Click to edit invoice" style={{ cursor: 'pointer', display: 'inline-block', borderBottom: '1px dashed var(--border)', fontSize: 10, color: 'var(--text-faint)', marginTop: 2 }}>
-      {value ? `From Inv #${value}` : 'Link Invoice +'}
-    </span>
-  );
-}
-
-function ProjectClientEditCell({ value, clients = [], onSave }) {
-  const [editing, setEditing] = useState(false);
-  const [selectedClient, setSelectedClient] = useState('');
-
-  if (editing) {
-    const clientObj = clients.find(c => c.name === selectedClient);
-    const projects = clientObj ? clientObj.projects || [] : [];
-
-    return (
-      <div style={{ position: 'absolute', zIndex: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, boxShadow: 'var(--shadow-md)', minWidth: 200, marginTop: 4 }}>
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Client</div>
-          <select
-            autoFocus
-            value={selectedClient}
-            onChange={(e) => setSelectedClient(e.target.value)}
-            style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
-          >
-            <option value="">-- Choose Client --</option>
-            {clients.map(c => (
-              <option key={c.name} value={c.name}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-
-        {selectedClient && (
-          <div style={{ marginBottom: 8 }}>
-            <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Project</div>
-            <select
-              onChange={(e) => {
-                const proj = e.target.value;
-                setEditing(false);
-                onSave(proj ? `${selectedClient} - ${proj}` : selectedClient);
-              }}
-              style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
-            >
-              <option value="">-- Choose Project --</option>
-              {projects.map(p => (
-                <option key={p.id} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-        )}
-        <div style={{ textAlign: 'right' }}>
-          <button onClick={() => setEditing(false)} style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--text-light)', cursor: 'pointer', padding: '4px 8px' }}>Cancel</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <span
-      onClick={() => setEditing(true)}
-      title="Click to edit project"
-      style={{
-        cursor: 'pointer', display: 'inline-block', minWidth: 60,
-        padding: '2px 4px', borderRadius: 4,
-        borderBottom: '1px dashed var(--border)',
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-soft)'}
-      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-    >
-      {value || 'Assign Project +'}
-    </span>
-  );
-}
-
-function EmployeeEditCell({ value, employees = [], onSave }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    const activeEmps = employees.filter(e => e.status === 'active' || !e.status);
-    return (
-      <div style={{ position: 'absolute', zIndex: 10, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8, padding: 10, boxShadow: 'var(--shadow-md)', minWidth: 200, marginTop: 4 }}>
-        <div style={{ marginBottom: 8 }}>
-          <div style={{ fontSize: 10, textTransform: 'uppercase', color: 'var(--text-light)', marginBottom: 4 }}>Select Employee</div>
-          <select
-            autoFocus
-            value={value || ''}
-            onChange={(e) => {
-              setEditing(false);
-              onSave(e.target.value);
-            }}
-            style={{ width: '100%', padding: '6px', borderRadius: 6, border: '1px solid var(--border)', fontSize: 12 }}
-          >
-            <option value="">-- Choose Employee --</option>
-            {activeEmps.map(e => (
-              <option key={e.id} value={e.name}>{e.name}</option>
-            ))}
-          </select>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          <button onClick={() => setEditing(false)} style={{ fontSize: 11, background: 'none', border: 'none', color: 'var(--text-light)', cursor: 'pointer', padding: '4px 8px' }}>Cancel</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <span
-      onClick={() => setEditing(true)}
-      title="Click to select employee"
-      style={{
-        cursor: 'pointer', display: 'inline-block', minWidth: 80,
-        padding: '2px 4px', borderRadius: 4,
-        borderBottom: '1px dashed var(--border)',
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--primary-soft)'}
-      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-    >
-      {value || 'Assign Employee +'}
-    </span>
-  );
-}
-
-export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete, onReorder, onPushToNextMonth, urgentSalaryIds = [], onToggleUrgent }) {
-  const months = [...new Set(salaries.map((s) => s.month))].sort((a, b) => b.localeCompare(a));
-  // Open on the current month (auto-pushed installments can make next month the newest tab)
-  const [activeMonth, setActiveMonth] = useState(months.includes(currentYM()) ? currentYM() : (months[0] || currentYM()));
-  const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'monthly' | 'project' | 'paid'
-  const [showAddRow, setShowAddRow] = useState(false);
-  const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: activeMonth, salaryType: 'monthly' });
-  const [dragId, setDragId] = useState(null);
-  const [dragOverId, setDragOverId] = useState(null);
-  const [expandedEmployees, setExpandedEmployees] = useState({});
-
-  const toggleEmployeeExpanded = (empName) => {
-    setExpandedEmployees(prev => ({
-      ...prev,
-      [empName]: !prev[empName]
-    }));
+  const counts = {
+    due: monthRows.filter(isOpen).length,
+    paid: monthRows.filter((r) => !isOpen(r)).length,
+    all: monthRows.length,
   };
 
-  const rows = salaries.filter((s) => s.month === activeMonth);
-  const isDoneStatus = (s) => s.status === 'paid' || s.status === 'pushed';
-
-  const filteredRows = rows.filter((s) => {
-    if (activeCategory === 'all') {
+  // Filter → group by employee → sort (owed most first)
+  const groups = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    const rows = monthRows.filter((r) => {
+      if (status === 'due' && !isOpen(r)) return false;
+      if (status === 'paid' && isOpen(r)) return false;
+      if (type === 'monthly' && r.salaryType !== 'monthly') return false;
+      if (type === 'project' && r.salaryType === 'monthly') return false;
+      if (s && ![r.employeeName, r.projectName, r.invoiceId].some((v) => String(v || '').toLowerCase().includes(s))) return false;
       return true;
-    }
-    if (activeCategory === 'paid') {
-      return isDoneStatus(s);
-    }
-    if (activeCategory === 'monthly') {
-      return s.salaryType === 'monthly' && !isDoneStatus(s);
-    }
-    return s.salaryType !== 'monthly' && !isDoneStatus(s);
-  });
-
-  const totalPool = filteredRows.reduce((sum, s) => sum + (Number(s.totalSalary) || 0), 0);
-  const totalPaid = filteredRows.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
-  const totalRemaining = totalPool - totalPaid;
-
-  // Group filteredRows by employeeName
-  const groupedRows = [];
-  const groups = {};
-
-  filteredRows.forEach(row => {
-    const key = row.employeeName || 'Unknown Employee';
-    if (!groups[key]) {
-      groups[key] = [];
-    }
-    groups[key].push(row);
-  });
-
-  Object.entries(groups).forEach(([employeeName, items]) => {
-    if (items.length === 1) {
-      groupedRows.push({
-        type: 'single',
-        employeeName,
-        row: items[0],
-        id: items[0].id
-      });
-    } else {
-      const totalSalary = items.reduce((sum, item) => sum + (Number(item.totalSalary) || 0), 0);
-      const paidAmount = items.reduce((sum, item) => sum + (Number(item.paidAmount) || 0), 0);
-      const remaining = totalSalary - paidAmount;
-      
-      let status = 'unpaid';
-      if (paidAmount >= totalSalary && totalSalary > 0) status = 'paid';
-      else if (paidAmount > 0) status = 'partial';
-
-      groupedRows.push({
-        type: 'parent',
-        employeeName,
-        items,
-        totalSalary,
-        paidAmount,
-        remaining,
-        status,
-        id: `group-${employeeName}`
-      });
-    }
-  });
-
-  const updateRow = useCallback((id, patch) => {
-    onUpdate(id, patch);
-  }, [onUpdate]);
-
-  const handleFieldSave = (row, field, rawVal) => {
-    const stringFields = ['employeeName', 'projectName', 'invoiceId', 'salaryType', 'status', 'month'];
-    const val = stringFields.includes(field) ? rawVal : Number(rawVal) || 0;
-    const updated = { ...row, [field]: val };
-
-    // 'pushed' rows were settled by carrying the balance forward; keep them closed
-    if (field !== 'status' && row.status !== 'pushed') {
-      const total = Number(updated.totalSalary) || 0;
-      const paid = Number(updated.paidAmount) || 0;
-      if (paid >= total && total > 0) updated.status = 'paid';
-      else if (paid > 0) updated.status = 'partial';
-      else updated.status = 'unpaid';
-    }
-
-    updateRow(row.id, updated);
-  };
-
-  const handleDragStart = (e, id) => {
-    setDragId(id);
-    e.dataTransfer.effectAllowed = 'move';
-    // Also expose salaryId so the Urgent Panel drop zone can catch it
-    e.dataTransfer.setData('salaryId', id);
-  };
-
-  const handleDragOver = (e, id) => {
-    e.preventDefault();
-    if (id !== dragId) setDragOverId(id);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    if (!dragId || !dragOverId || dragId === dragOverId) {
-      setDragId(null); setDragOverId(null); return;
-    }
-
-    let dragItems = [];
-    if (dragId.startsWith('group-')) {
-      const empName = dragId.replace('group-', '');
-      dragItems = salaries.filter(s => s.month === activeMonth && s.employeeName === empName);
-    } else {
-      const item = salaries.find(s => s.id === dragId);
-      if (item) dragItems = [item];
-    }
-
-    let targetEmpName = null;
-    let targetItemId = null;
-    if (dragOverId.startsWith('group-')) {
-      targetEmpName = dragOverId.replace('group-', '');
-    } else {
-      targetItemId = dragOverId;
-    }
-
-    let targetIdx = -1;
-    if (targetEmpName) {
-      targetIdx = salaries.findIndex(s => s.month === activeMonth && s.employeeName === targetEmpName);
-    } else {
-      targetIdx = salaries.findIndex(s => s.id === targetItemId);
-    }
-
-    if (dragItems.length === 0 || targetIdx === -1) {
-      setDragId(null); setDragOverId(null); return;
-    }
-
-    const dragItemIds = dragItems.map(item => item.id);
-    const remainingSalaries = salaries.filter(s => !dragItemIds.includes(s.id));
-    
-    let adjustedTargetIdx = targetIdx;
-    for (let i = 0; i < targetIdx; i++) {
-      if (dragItemIds.includes(salaries[i].id)) {
-        adjustedTargetIdx--;
-      }
-    }
-
-    const newSalaries = [...remainingSalaries];
-    newSalaries.splice(adjustedTargetIdx, 0, ...dragItems);
-
-    const reordered = newSalaries.map((s, idx) => ({ ...s, displayOrder: idx }));
-
-    if (onReorder) onReorder(reordered);
-    setDragId(null); setDragOverId(null);
-  };
-
-  const payInFull = (row) => {
-    const total = Number(row.totalSalary) || 0;
-    if (total <= 0) return;
-    onUpdate(row.id, { paidAmount: total, status: 'paid' });
-  };
-
-  const exportCSV = () => {
-    const out = [['Employee', 'Project / Client', 'Type', 'Invoice', 'Month', 'Total (AED)', 'Paid (AED)', 'Remaining (AED)', 'Status']];
-    filteredRows.forEach(r => {
-      const t = Number(r.totalSalary) || 0;
-      const p = Number(r.paidAmount) || 0;
-      out.push([r.employeeName, r.projectName || '', r.salaryType === 'monthly' ? 'monthly' : 'one-time', r.invoiceId || '', r.month, t, p, Math.max(0, t - p), r.status || 'unpaid']);
     });
-    downloadCSV(`salaries-${activeMonth}-${activeCategory}.csv`, out);
+    const map = new Map();
+    rows.forEach((r) => {
+      const key = (r.employeeName || 'Unassigned').trim();
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(r);
+    });
+    return [...map.entries()].map(([name, items]) => {
+      const total = items.reduce((a, r) => a + (Number(r.totalSalary) || 0), 0);
+      const paid = items.reduce((a, r) => a + (Number(r.paidAmount) || 0), 0);
+      const remaining = items.reduce((a, r) => a + remainingOf(r), 0);
+      return { name, items, total, paid, remaining, status: remaining <= 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid' };
+    }).sort((a, b) => (b.remaining > 0) - (a.remaining > 0) || b.remaining - a.remaining || a.name.localeCompare(b.name));
+  }, [monthRows, status, type, q]);
+
+  // ── Actions ──
+  const toggle = (name) => setExpanded((e) => ({ ...e, [name]: !e[name] }));
+
+  const openPay = (g, e) => {
+    e.stopPropagation();
+    setPayFor(g.name);
+    setPayAmt(String(g.remaining));
   };
 
-  const handlePushNextMonth = (row) => {
-    if (row.status === 'paid') {
-      alert('This salary is already fully paid!');
-      return;
-    }
+  // Spread a payment over the employee's open items, oldest first
+  const applyPay = (g) => {
+    let left = Number(payAmt) || 0;
+    if (left <= 0) return;
+    const patches = [];
+    [...g.items].filter(isOpen).sort((a, b) => (a.month || '').localeCompare(b.month || '')).forEach((item) => {
+      if (left <= 0) return;
+      const add = Math.min(remainingOf(item), left);
+      left -= add;
+      const newPaid = (Number(item.paidAmount) || 0) + add;
+      patches.push({ id: item.id, patch: { paidAmount: newPaid, status: statusFor(Number(item.totalSalary) || 0, newPaid) } });
+    });
+    if (patches.length) onUpdate(patches);
+    setPayFor(null);
+    setPayAmt('');
+  };
 
+  const payItemInFull = (row) => {
+    const total = Number(row.totalSalary) || 0;
+    if (total > 0) onUpdate(row.id, { paidAmount: total, status: 'paid' });
+  };
+
+  const pushToNextMonth = (row) => {
     const next = nextYM(row.month);
     const total = Number(row.totalSalary) || 0;
     const paid = Number(row.paidAmount) || 0;
-    const remaining = Math.max(0, total - paid);
-
     if (paid > 0) {
-      // Split the record
-      const updatedCurrentRow = { ...row, status: 'pushed' };
-      const newNextMonthRow = {
+      onPushToNextMonth({ ...row, status: 'pushed' }, {
         ...row,
         id: `sal-manual-push-${row.id}-${Date.now()}`,
         month: next,
-        totalSalary: remaining,
+        totalSalary: Math.max(0, total - paid),
         paidAmount: 0,
         status: 'unpaid',
         rolledOver: true,
         originalMonth: row.originalMonth || row.month,
-        createdAt: new Date().toISOString()
-      };
-
-      onPushToNextMonth(updatedCurrentRow, newNextMonthRow);
+        createdAt: new Date().toISOString(),
+      });
     } else {
-      // Completely unpaid, just move it
-      const updatedCurrentRow = { ...row, month: next, rolledOver: true };
-      onPushToNextMonth(updatedCurrentRow, null);
+      onPushToNextMonth({ ...row, month: next, rolledOver: true }, null);
     }
   };
 
+  const exportCSV = () => {
+    const out = [['Employee', 'Project / Client', 'Type', 'Invoice', 'Month', 'Total (AED)', 'Paid (AED)', 'Remaining (AED)', 'Status']];
+    groups.forEach((g) => g.items.forEach((r) => out.push([
+      r.employeeName, r.projectName || '', r.salaryType === 'monthly' ? 'monthly' : 'one-time', r.invoiceId || '', r.month,
+      Number(r.totalSalary) || 0, Number(r.paidAmount) || 0, remainingOf(r), r.status || 'unpaid',
+    ])));
+    downloadCSV(`salaries-${month}.csv`, out);
+  };
+
+  const newRow = () => setEditor({ mode: 'new', row: { ...EMPTY_ROW, month } });
+
   return (
     <div className="animate-fade-in">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+      <div className="page-head">
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 2 }}>Salaries Tracker</h1>
-          <div style={{ fontSize: 12, color: 'var(--text-light)' }}>Track individual employee payouts and balances cross-project</div>
+          <h1 className="page-title">Salaries</h1>
+          <p className="page-sub">Who's owed what, month by month</p>
         </div>
-        <button
-          onClick={() => {
-            const defaultType = activeCategory === 'paid' ? 'monthly' : activeCategory;
-            setNewRow({ ...EMPTY_SALARY_ROW, month: activeMonth, salaryType: defaultType });
-            setShowAddRow(true);
-          }}
-          style={{
-            background: 'var(--primary)', color: '#fff', border: 'none',
-            borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600,
-            cursor: 'pointer', fontFamily: 'Poppins, sans-serif', display: 'flex', alignItems: 'center', gap: 8,
-          }}
-        >
-          + Custom Salary
-        </button>
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -12, marginBottom: 12 }}>
-        <button className="link-btn" onClick={exportCSV} disabled={filteredRows.length === 0}>⬇ Export {fmtMonth(activeMonth)} to CSV</button>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        {(months.length === 0 ? [currentYM()] : months).map((m) => (
-          <button
-            key={m}
-            onClick={() => setActiveMonth(m)}
-            className={`month-tab ${activeMonth === m ? 'month-tab-active' : ''}`}
-          >
-            {fmtMonth(m)}
-          </button>
-        ))}
-      </div>
-
-      {/* Category Tabs */}
-      <div className="tab-bar">
-        {[
-          { id: 'all', label: '📋 All', count: rows.length },
-          { id: 'monthly', label: 'Salaries (Monthly)', count: rows.filter(s => s.salaryType === 'monthly' && s.status !== 'paid' && s.status !== 'pushed').length },
-          { id: 'project', label: 'Salaries (One-Time)', count: rows.filter(s => s.salaryType !== 'monthly' && s.status !== 'paid' && s.status !== 'pushed').length },
-          { id: 'paid', label: '✅ Paid', count: rows.filter(s => s.status === 'paid' || s.status === 'pushed').length }
-        ].map(tab => {
-          const isActive = activeCategory === tab.id;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveCategory(tab.id)}
-              style={{
-                background: 'none',
-                border: 'none',
-                borderBottom: isActive ? '3px solid var(--primary)' : '3px solid transparent',
-                padding: '10px 20px',
-                fontSize: 13,
-                fontWeight: isActive ? 700 : 500,
-                color: isActive ? 'var(--text)' : 'var(--text-light)',
-                cursor: 'pointer',
-                fontFamily: 'Poppins, sans-serif',
-                transition: 'all 0.18s',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: -2,
-                borderRadius: '6px 6px 0 0',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {tab.label}
-              <span style={{
-                background: isActive ? 'var(--primary)' : 'var(--border)',
-                color: isActive ? '#fff' : 'var(--text-light)',
-                borderRadius: 20,
-                fontSize: 10,
-                fontWeight: 700,
-                padding: '1px 7px',
-                minWidth: 20,
-                textAlign: 'center',
-                transition: 'all 0.18s',
-              }}>
-                {tab.count}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="summary-3">
-        {[
-          { label: 'Total Salary Pool', val: totalPool, color: 'var(--text)' },
-          { label: 'Total Paid Out', val: totalPaid, color: 'var(--success)' },
-          { label: 'Total Remaining', val: totalRemaining, color: 'var(--warning)' },
-        ].map(({ label, val, color }) => (
-          <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', boxShadow: 'var(--shadow)' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>{label}</div>
-            <div style={{ fontSize: 24, fontWeight: 700, color }}>AED {val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div className="month-nav">
+            <button onClick={() => setMonth(prevYM(month))} aria-label="Previous month">‹</button>
+            <span>{fmtMonth(month)}</span>
+            <button onClick={() => setMonth(nextYM(month))} aria-label="Next month">›</button>
           </div>
-        ))}
+          {month !== thisMonth && <button className="chip-btn" onClick={() => setMonth(thisMonth)}>This month</button>}
+          <Btn onClick={newRow}><Icon name="plus" size={14} /> Add salary</Btn>
+        </div>
       </div>
 
-      {showAddRow && (
-        <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderRadius: 12, padding: 20, marginBottom: 24, boxShadow: 'var(--shadow-md)' }}>
-          <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 14 }}>Add Custom Salary</div>
+      {/* Month summary */}
+      <div className="stat-strip">
+        <div>
+          <div className="stat-strip-label">Payroll</div>
+          <div className="stat-strip-value">{fmtAED(summary.total, 0)}</div>
+          <div className="meter-sm"><div style={{ width: `${summary.total ? Math.min(100, (summary.paid / summary.total) * 100) : 0}%` }} /></div>
+        </div>
+        <div>
+          <div className="stat-strip-label">Paid</div>
+          <div className="stat-strip-value" style={{ color: 'var(--success)' }}>{fmtAED(summary.paid, 0)}</div>
+          <div className="stat-strip-sub">{summary.total ? Math.round((summary.paid / summary.total) * 100) : 0}% of payroll</div>
+        </div>
+        <div>
+          <div className="stat-strip-label">Still to pay</div>
+          <div className="stat-strip-value" style={{ color: summary.remaining ? 'var(--warning)' : 'var(--text)' }}>{fmtAED(summary.remaining, 0)}</div>
+          <div className="stat-strip-sub">{summary.owed} {summary.owed === 1 ? 'person' : 'people'} waiting</div>
+        </div>
+      </div>
 
-          {employees.length > 0 && (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 8, fontWeight: 600 }}>👤 Pick from Employees</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {employees.filter(e => e.status === 'active' || !e.status).map(emp => (
-                  <button
-                    key={emp.id}
-                    type="button"
-                    onClick={() => setNewRow(r => ({
-                      ...r,
-                      employeeName: emp.name,
-                      totalSalary: Number(emp.baseSalary) || r.totalSalary,
-                      salaryType: emp.salaryType || 'monthly',
-                    }))}
-                    style={{
-                      padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600,
-                      cursor: 'pointer', fontFamily: 'Poppins,sans-serif', transition: 'all 0.15s',
-                      border: newRow.employeeName === emp.name ? '2px solid var(--primary)' : '1.5px solid var(--border)',
-                      background: newRow.employeeName === emp.name ? 'var(--primary-soft)' : 'var(--card)',
-                      color: newRow.employeeName === emp.name ? 'var(--primary)' : 'var(--text-mid)',
-                    }}
-                  >
-                    {emp.name}
-                    {emp.baseSalary > 0 && <span style={{ fontWeight: 400, marginLeft: 6, color: 'var(--text-faint)', fontSize: 10 }}>AED {Number(emp.baseSalary).toLocaleString()}</span>}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          <div className="form-grid-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Employee Name</div>
-              <select
-                value={newRow.employeeName || ''}
-                onChange={(e) => {
-                  const name = e.target.value;
-                  setNewRow((r) => ({
-                    ...r,
-                    employeeName: name,
-                  }));
-                }}
-                className="form-select"
-              >
-                <option value="">-- Select Employee --</option>
-                {employees.filter(e => e.status === 'active' || !e.status).map(e => (
-                  <option key={e.id} value={e.name}>{e.name}</option>
-                ))}
-              </select>
-            </div>
-            {[
-              { label: 'Project Name', key: 'projectName', type: 'text' },
-              { label: 'Invoice # (Optional)', key: 'invoiceId', type: 'text' },
-              { label: 'Total Salary', key: 'totalSalary', type: 'number' },
-              { label: 'Paid Amount', key: 'paidAmount', type: 'number' },
-            ].map(({ label, key, type }) => (
-              <div key={key}>
-                <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>{label}</div>
-                <input
-                  type={type}
-                  value={newRow[key] || ''}
-                  onChange={(e) => setNewRow((r) => ({ ...r, [key]: type === 'number' ? Number(e.target.value) : e.target.value }))}
-                  className="form-input"
-                />
-              </div>
-            ))}
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Salary Type</div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
-                {[{ val: 'project', label: '📦 One-Time' }, { val: 'monthly', label: '🔄 Monthly' }].map(({ val, label }) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => setNewRow(r => ({ ...r, salaryType: val }))}
-                    style={{
-                      flex: 1, padding: '8px 6px', borderRadius: 8, fontSize: 12, fontWeight: 600,
-                      cursor: 'pointer', fontFamily: 'Poppins,sans-serif', transition: 'all 0.15s',
-                      border: (newRow.salaryType || 'project') === val ? '2px solid var(--primary)' : '1.5px solid var(--border)',
-                      background: (newRow.salaryType || 'project') === val ? 'var(--primary-soft)' : 'var(--input-bg)',
-                      color: (newRow.salaryType || 'project') === val ? 'var(--primary)' : 'var(--text-mid)',
-                    }}
-                  >{label}</button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Month</div>
-              <input type="month" className="form-input" value={newRow.month || activeMonth} onChange={(e) => setNewRow((r) => ({ ...r, month: e.target.value }))} />
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button onClick={() => setShowAddRow(false)} style={{ padding: '8px 18px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontFamily: 'Poppins, sans-serif', fontSize: 13 }}>Cancel</button>
-            <button
-              onClick={() => {
-                const total = Number(newRow.totalSalary) || 0;
-                const paid = Number(newRow.paidAmount) || 0;
-                if (!newRow.employeeName) { alert('Please select an employee.'); return; }
-                if (total <= 0) { alert('Please enter the total salary.'); return; }
-                if (paid > total) { alert('Paid amount cannot be more than the total salary.'); return; }
-                const row = {
-                  ...newRow,
-                  month: newRow.month || activeMonth,
-                  totalSalary: total,
-                  paidAmount: paid,
-                  // Status always follows the amounts
-                  status: paid >= total ? 'paid' : paid > 0 ? 'partial' : 'unpaid',
-                  id: `man-sal-${Date.now()}`,
-                  createdAt: new Date().toISOString(),
-                };
-                onAdd(row);
-                setShowAddRow(false);
-                if (row.month !== activeMonth) setActiveMonth(row.month);
-              }}
-              style={{ padding: '8px 18px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontFamily: 'Poppins, sans-serif', fontSize: 13 }}
-            >
-              Add Salary
-            </button>
-          </div>
+      {arrears.count > 0 && (
+        <div className="notice notice-warning">
+          <Icon name="alert" size={16} />
+          <span style={{ flex: 1 }}><b>{fmtAED(arrears.amount, 0)}</b> is still unpaid from earlier months ({arrears.count} record{arrears.count === 1 ? '' : 's'}).</span>
+          <button className="link-btn" onClick={() => setMonth(arrears.oldest)}>Go to {fmtMonth(arrears.oldest)} →</button>
         </div>
       )}
 
-      {filteredRows.length === 0 ? (
-        <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-light)' }}>
-          <div style={{ fontSize: 36, marginBottom: 12 }}>💼</div>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {activeCategory === 'paid'
-              ? `No paid salaries for ${fmtMonth(activeMonth)}`
-              : `No ${activeCategory === 'monthly' ? 'monthly' : 'one-time'} salary records for ${fmtMonth(activeMonth)}`}
-          </div>
-          <div style={{ fontSize: 13 }}>
-            {activeCategory === 'paid' ? 'Mark salaries as paid to see them here.' : 'Create invoices or add a custom salary to get started.'}
-          </div>
+      <div className="toolbar">
+        <Segmented
+          value={status}
+          onChange={setStatus}
+          options={[
+            { value: 'due', label: 'To pay', count: counts.due },
+            { value: 'paid', label: 'Paid', count: counts.paid },
+            { value: 'all', label: 'All', count: counts.all },
+          ]}
+        />
+        <Segmented
+          value={type}
+          onChange={setType}
+          options={[{ value: 'all', label: 'All types' }, { value: 'monthly', label: 'Monthly' }, { value: 'project', label: 'One-time' }]}
+        />
+        <div className="search-wrap">
+          <input className="search-input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, project or invoice…" />
+          <div className="search-icon"><Icon name="search" size={14} /></div>
+        </div>
+        <button className="link-btn" style={{ marginLeft: 'auto' }} onClick={exportCSV} disabled={groups.length === 0}>⬇ Export CSV</button>
+      </div>
+
+      {groups.length === 0 ? (
+        <div className="list">
+          <Empty
+            icon={status === 'due' && monthRows.length ? '🎉' : '💼'}
+            title={status === 'due' && monthRows.length ? `Everyone's paid for ${fmtMonth(month)}` : `No salaries for ${fmtMonth(month)}`}
+            text={monthRows.length ? 'Switch to "All" to see settled salaries.' : 'Salaries are created from invoices, or add one manually.'}
+            action={!monthRows.length && <Btn size="sm" onClick={newRow}>+ Add salary</Btn>}
+          />
         </div>
       ) : (
-        <div className="finance-table-wrap">
-          <table className="finance-table" onDragOver={e => e.preventDefault()} onDrop={handleDrop}>
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}></th>
-                <th>Employee Name</th>
-                <th>Project / Client</th>
-                <th style={{ textAlign: 'right' }}>Total Salary</th>
-                <th style={{ textAlign: 'right' }}>Paid</th>
-                <th style={{ textAlign: 'right' }}>Remaining</th>
-                <th style={{ textAlign: 'center' }}>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {groupedRows.map((group) => {
-                if (group.type === 'single') {
-                  const row = group.row;
-                  const total = Number(row.totalSalary) || 0;
-                  const paid = Number(row.paidAmount) || 0;
-                  const remaining = Math.max(0, total - paid);
-                  const rowStatus = row.status || 'unpaid';
-                  const rowBorder = rowStatus === 'paid' ? '#0D9F5F' : rowStatus === 'partial' ? '#D97706' : '#DC143C';
-                  const isDragTarget = dragOverId === row.id && dragId !== row.id;
+        <div className="list">
+          {groups.map((g) => {
+            const open = !!expanded[g.name];
+            const projects = [...new Set(g.items.map((i) => i.projectName).filter(Boolean))];
+            return (
+              <React.Fragment key={g.name}>
+                <div className="list-row clickable" onClick={() => toggle(g.name)} aria-expanded={open}>
+                  <span className="chevron" style={{ transform: open ? 'rotate(90deg)' : 'none' }}>▶</span>
+                  <Avatar name={g.name} />
+                  <div className="row-main">
+                    <div className="row-title">
+                      {g.name}
+                      <span className={`badge ${PILL[g.status].cls}`}>{PILL[g.status].label}</span>
+                    </div>
+                    <div className="row-sub">
+                      {g.items.length > 1 ? `${g.items.length} items · ` : ''}{projects.join(', ') || (g.items[0].salaryType === 'monthly' ? 'Monthly salary' : 'One-time')}
+                    </div>
+                  </div>
+                  <div className="row-amount" style={{ minWidth: 150 }}>
+                    <div className="row-amount-main" style={{ color: g.remaining ? 'var(--text)' : 'var(--success)' }}>
+                      {g.remaining ? `${fmtAED(g.remaining, 0)} due` : '✓ Settled'}
+                    </div>
+                    <div className="row-amount-sub">{fmtAED(g.paid, 0)} of {fmtAED(g.total, 0)} paid</div>
+                    <div className="meter-sm"><div style={{ width: `${g.total ? Math.min(100, (g.paid / g.total) * 100) : 0}%` }} /></div>
+                  </div>
+                  <div className="row-actions" style={{ minWidth: 72, justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                    {payFor === g.name ? (
+                      <div className="pay-inline">
+                        <input
+                          autoFocus type="number" className="form-input" value={payAmt}
+                          onChange={(e) => setPayAmt(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') applyPay(g); if (e.key === 'Escape') setPayFor(null); }}
+                          aria-label={`Amount to pay ${g.name}`}
+                        />
+                        <Btn size="sm" variant="success" onClick={() => applyPay(g)}>Pay</Btn>
+                        <button className="icon-btn" onClick={() => setPayFor(null)} aria-label="Cancel">✕</button>
+                      </div>
+                    ) : g.remaining > 0 ? (
+                      <Btn size="sm" onClick={(e) => openPay(g, e)}>Pay</Btn>
+                    ) : null}
+                  </div>
+                </div>
 
+                {open && g.items.map((r) => {
+                  const rem = remainingOf(r);
+                  const pill = PILL[r.status] || PILL.unpaid;
+                  const urgent = urgentSalaryIds.includes(r.id);
                   return (
-                    <tr 
-                      key={row.id} 
-                      draggable
-                      onDragStart={e => handleDragStart(e, row.id)}
-                      onDragOver={e => handleDragOver(e, row.id)}
-                      onDragEnd={() => { setDragId(null); setDragOverId(null); }}
-                      style={{ 
-                        borderLeft: `3px solid ${rowBorder}`,
-                        opacity: dragId === row.id ? 0.45 : 1,
-                        borderTop: isDragTarget ? '2px solid var(--primary)' : 'none',
-                        cursor: 'grab'
-                      }}
+                    <div
+                      key={r.id}
+                      className="list-sub-row"
+                      draggable={isOpen(r)}
+                      onDragStart={(e) => { e.dataTransfer.setData('salaryId', r.id); e.dataTransfer.effectAllowed = 'copy'; }}
                     >
-                      <td style={{ color: 'var(--text-faint)', fontSize: 16, textAlign: 'center', cursor: 'grab', userSelect: 'none' }}>⠿</td>
-                      <td style={{ position: 'relative' }}>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>
-                          <EmployeeEditCell value={row.employeeName} employees={employees} onSave={(v) => handleFieldSave(row, 'employeeName', v)} />
+                      <div className="row-main">
+                        <div style={{ fontWeight: 600, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                          {r.projectName || (r.salaryType === 'monthly' ? 'Monthly salary' : 'Unnamed')}
+                          <span className="badge badge-blue">{r.salaryType === 'monthly' ? 'Monthly' : 'One-time'}</span>
+                          {r.rolledOver && <span className="badge badge-yellow" title={r.originalMonth ? `From ${fmtMonth(r.originalMonth)}` : 'Carried over'}>↩ carried over</span>}
                         </div>
-                        {row.rolledOver && (
-                          <span style={{ fontSize: 10, color: 'var(--info)', background: 'var(--info-soft)', borderRadius: 4, padding: '1px 6px', marginTop: 2, display: 'inline-block' }}>
-                            ↩ carried over
-                          </span>
+                        <div className="row-sub">{r.invoiceId ? `Invoice #${r.invoiceId}` : 'No invoice linked'}</div>
+                      </div>
+                      <div className="row-amount">
+                        <div className="row-amount-main" style={{ fontSize: 13 }}>{fmtAED(r.totalSalary, 0)}</div>
+                        <div className="row-amount-sub">{rem ? `${fmtAED(rem, 0)} left` : <span className={`badge ${pill.cls}`}>{pill.label}</span>}</div>
+                      </div>
+                      <div className="row-actions">
+                        {rem > 0 && <button className="chip-btn chip-success" style={{ marginRight: 0 }} onClick={() => payItemInFull(r)}>✓ Pay in full</button>}
+                        {onToggleUrgent && isOpen(r) && (
+                          <button className="icon-btn" onClick={() => onToggleUrgent(r.id)} title={urgent ? 'Remove from urgent' : 'Mark urgent'} style={urgent ? { borderColor: 'var(--danger)', background: 'var(--danger-soft)' } : { opacity: 0.6 }}>🚨</button>
                         )}
-                        <InvoiceEditCell value={row.invoiceId} invoices={invoices} onSave={(v) => handleFieldSave(row, 'invoiceId', v)} />
-                      </td>
-                      <td style={{ position: 'relative' }}>
-                        <div style={{ color: 'var(--text-mid)', fontWeight: 500 }}>
-                          <ProjectClientEditCell value={row.projectName} clients={clients} onSave={(v) => handleFieldSave(row, 'projectName', v)} />
-                        </div>
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, fontSize: 14 }}>
-                        <EditCell value={total} onSave={(v) => handleFieldSave(row, 'totalSalary', v)} prefix="AED " />
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>
-                        <EditCell value={paid} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="AED " />
-                      </td>
-                      <td style={{ textAlign: 'right', fontWeight: 700, color: remaining > 0 ? 'var(--warning)' : 'var(--text-mid)', fontSize: 14 }}>
-                        AED {remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </td>
-                      <td style={{ textAlign: 'center' }}>
-                        <StatusPill status={rowStatus === 'pushed' ? 'paid' : rowStatus} />
-                      </td>
-                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {onToggleUrgent && (
-                          <button
-                            onClick={() => onToggleUrgent(row.id)}
-                            title={urgentSalaryIds.includes(row.id) ? 'Remove from Urgent' : 'Mark as Urgent'}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '4px 6px', fontSize: 14, marginRight: 4, opacity: urgentSalaryIds.includes(row.id) ? 1 : 0.3, transition: 'opacity 0.15s' }}
-                          >🚨</button>
-                        )}
-                        {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
-                          <>
-                            <button onClick={() => payInFull(row)} className="chip-btn chip-success" title="Record the full remaining amount as paid">✓ Pay</button>
-                            <button
-                              onClick={() => handlePushNextMonth(row)}
-                              style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '4px 8px', fontSize: 13, fontWeight: 600, marginRight: 8, fontFamily: 'Poppins, sans-serif' }}
-                              title="Push to Next Month"
-                            >
-                              Push ⏭️
-                            </button>
-                          </>
-                        )}
-                        <button
-                          onClick={() => { if (window.confirm('Delete this salary record?')) onDelete(row.id); }}
-                          style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: 4, fontSize: 18, lineHeight: 1 }}
-                          title="Delete"
-                        >
-                          ×
-                        </button>
-                      </td>
-                    </tr>
+                        {isOpen(r) && <button className="icon-btn" onClick={() => pushToNextMonth(r)} title="Move balance to next month">⏭</button>}
+                        <button className="icon-btn" onClick={() => setEditor({ mode: 'edit', row: r })} title="Edit"><Icon name="edit" size={13} /></button>
+                        <button className="icon-btn danger" onClick={() => { if (window.confirm('Delete this salary record?')) onDelete(r.id); }} title="Delete"><Icon name="trash" size={13} /></button>
+                      </div>
+                    </div>
                   );
-                } else {
-                  const isDragTarget = dragOverId === group.id && dragId !== group.id;
-                  const parentBorder = group.status === 'paid' ? '#0D9F5F' : group.status === 'partial' ? '#D97706' : '#DC143C';
-                  const isExpanded = !!expandedEmployees[group.employeeName];
-
-                  return (
-                    <React.Fragment key={group.id}>
-                      <tr 
-                        draggable
-                        onDragStart={e => handleDragStart(e, group.id)}
-                        onDragOver={e => handleDragOver(e, group.id)}
-                        onDragEnd={() => { setDragId(null); setDragOverId(null); }}
-                        style={{ 
-                          borderLeft: `3px solid ${parentBorder}`,
-                          opacity: dragId === group.id ? 0.45 : 1,
-                          borderTop: isDragTarget ? '2px solid var(--primary)' : 'none',
-                          cursor: 'grab'
-                        }}
-                      >
-                        <td style={{ color: 'var(--text-faint)', fontSize: 16, textAlign: 'center', cursor: 'grab', userSelect: 'none' }}>⠿</td>
-                        <td>
-                          <div 
-                            onClick={() => toggleEmployeeExpanded(group.employeeName)} 
-                            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}
-                          >
-                            <span style={{ 
-                              fontSize: 10, 
-                              color: 'var(--text-light)', 
-                              transition: 'transform 0.2s', 
-                              display: 'inline-block',
-                              transform: isExpanded ? 'rotate(90deg)' : 'none'
-                            }}>▶</span>
-                            <span style={{ fontWeight: 700, fontSize: 14 }}>{group.employeeName}</span>
-                            <span style={{ fontSize: 10, background: 'var(--primary-soft)', color: 'var(--primary)', borderRadius: 10, padding: '1px 6px', fontWeight: 600 }}>
-                              {group.items.length} projects
-                            </span>
-                          </div>
-                        </td>
-                        <td>
-                          {(() => {
-                            const totalsString = group.items
-                              .map(item => (Number(item.totalSalary) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 }))
-                              .join(' + ');
-                            return (
-                              <span style={{ color: 'var(--text-mid)', fontSize: 12, fontWeight: 500 }}>
-                                {group.items.length} projects of {totalsString} = {group.totalSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                              </span>
-                            );
-                          })()}
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 14 }}>
-                          AED {group.totalSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--success)', fontSize: 14 }}>
-                          <EditCell 
-                            value={group.paidAmount} 
-                            onSave={(v) => {
-                              let remainingPayment = Number(v) || 0;
-                              const updates = [];
-                              group.items.forEach((item) => {
-                                const itemTotal = Number(item.totalSalary) || 0;
-                                const paymentForItem = Math.min(remainingPayment, itemTotal);
-                                remainingPayment -= paymentForItem;
-                                
-                                let status = 'unpaid';
-                                if (paymentForItem >= itemTotal && itemTotal > 0) status = 'paid';
-                                else if (paymentForItem > 0) status = 'partial';
-                                
-                                updates.push({
-                                  id: item.id,
-                                  patch: { paidAmount: paymentForItem, status }
-                                });
-                              });
-                              onUpdate(updates);
-                            }} 
-                            prefix="AED " 
-                          />
-                        </td>
-                        <td style={{ textAlign: 'right', fontWeight: 700, color: group.remaining > 0 ? 'var(--warning)' : 'var(--text-mid)', fontSize: 14 }}>
-                          AED {group.remaining.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <StatusPill status={group.status} />
-                        </td>
-                        <td style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-faint)', paddingRight: 14 }}>
-                          <span onClick={() => toggleEmployeeExpanded(group.employeeName)} style={{ cursor: 'pointer', textDecoration: 'underline' }}>
-                            {isExpanded ? 'Collapse' : 'Expand'}
-                          </span>
-                        </td>
-                      </tr>
-
-                      {isExpanded && group.items.map((row) => {
-                        const total = Number(row.totalSalary) || 0;
-                        const paid = Number(row.paidAmount) || 0;
-                        const remaining = Math.max(0, total - paid);
-                        const rowStatus = row.status || 'unpaid';
-                        const rowBorder = rowStatus === 'paid' ? '#0D9F5F' : rowStatus === 'partial' ? '#D97706' : '#DC143C';
-
-                        return (
-                          <tr 
-                            key={row.id} 
-                            style={{ 
-                              background: 'var(--border-light)',
-                              borderLeft: `3px double ${rowBorder}`
-                            }}
-                          >
-                            <td></td>
-                            <td>
-                              <div style={{ paddingLeft: 16, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ color: 'var(--text-faint)' }}>↳</span>
-                                <span style={{ fontSize: 13, color: 'var(--text-light)', fontWeight: 500 }}>
-                                  <EmployeeEditCell value={row.employeeName} employees={employees} onSave={(v) => handleFieldSave(row, 'employeeName', v)} />
-                                </span>
-                              </div>
-                              {row.rolledOver && (
-                                <span style={{ fontSize: 9, color: 'var(--info)', background: 'var(--info-soft)', borderRadius: 4, padding: '1px 5px', marginLeft: 28, marginTop: 2, display: 'inline-block' }}>
-                                  ↩ carried over
-                                </span>
-                              )}
-                              <div style={{ marginLeft: 28 }}>
-                                <InvoiceEditCell value={row.invoiceId} invoices={invoices} onSave={(v) => handleFieldSave(row, 'invoiceId', v)} />
-                              </div>
-                            </td>
-                            <td style={{ position: 'relative' }}>
-                              <div style={{ color: 'var(--text-mid)', fontWeight: 500, fontSize: 13 }}>
-                                <ProjectClientEditCell value={row.projectName} clients={clients} onSave={(v) => handleFieldSave(row, 'projectName', v)} />
-                              </div>
-                            </td>
-                            <td style={{ textAlign: 'right', fontWeight: 600, fontSize: 13 }}>
-                              <EditCell value={total} onSave={(v) => handleFieldSave(row, 'totalSalary', v)} prefix="AED " style={{ borderBottom: 'none' }} />
-                            </td>
-                            <td style={{ textAlign: 'right', fontWeight: 600, color: 'var(--success)', fontSize: 13 }}>
-                              <EditCell value={paid} onSave={(v) => handleFieldSave(row, 'paidAmount', v)} prefix="AED " style={{ borderBottom: 'none' }} />
-                            </td>
-                            <td style={{ textAlign: 'right', fontWeight: 600, color: remaining > 0 ? 'var(--warning)' : 'var(--text-mid)', fontSize: 13 }}>
-                              AED {remaining.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                            <td style={{ textAlign: 'center' }}>
-                              <StatusPill status={rowStatus === 'pushed' ? 'paid' : rowStatus} />
-                            </td>
-                            <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                              {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
-                                <button onClick={() => payInFull(row)} className="chip-btn chip-success" title="Record the full remaining amount as paid">✓ Pay</button>
-                              )}
-                              {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
-                                <button
-                                  onClick={() => handlePushNextMonth(row)}
-                                  style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '4px 6px', fontSize: 12, fontWeight: 600, marginRight: 6, fontFamily: 'Poppins, sans-serif' }}
-                                  title="Push to Next Month"
-                                >
-                                  Push ⏭️
-                                </button>
-                              )}
-                              <button
-                                onClick={() => { if (window.confirm('Delete this salary record?')) onDelete(row.id); }}
-                                style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: 4, fontSize: 16, lineHeight: 1 }}
-                                title="Delete"
-                              >
-                                ×
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </React.Fragment>
-                  );
-                }
-              })}
-            </tbody>
-          </table>
+                })}
+              </React.Fragment>
+            );
+          })}
         </div>
       )}
 
-      {rows.length > 0 && (
-        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-faint)', textAlign: 'right' }}>
-          💡 Click any value to edit inline. Drag ⠿ to reorder.
-        </div>
+      {groups.length > 0 && (
+        <div className="hint">Tap a person to see their items · drag an item onto the Urgent panel to flag it</div>
+      )}
+
+      {editor && (
+        <SalaryEditor
+          key={editor.row.id || 'new'}
+          editor={editor}
+          onClose={() => setEditor(null)}
+          employees={employees}
+          clients={clients}
+          invoices={invoices}
+          onSubmit={(row, mode) => {
+            if (mode === 'new') onAdd(row);
+            else onUpdate(row.id, row);
+            if (row.month !== month) setMonth(row.month);
+            setEditor(null);
+          }}
+        />
       )}
     </div>
+  );
+}
+
+function SalaryEditor({ editor, onClose, employees, clients, invoices, onSubmit }) {
+  const [row, setRow] = useState(() => ({
+    ...EMPTY_ROW,
+    ...editor.row,
+    totalSalary: String(editor.row.totalSalary ?? ''),
+    paidAmount: String(editor.row.paidAmount || ''),
+  }));
+
+  const set = (k, v) => setRow((r) => ({ ...r, [k]: v }));
+  const active = employees.filter((e) => e.status === 'active' || !e.status);
+  const projectOptions = clients.flatMap((c) => [c.name, ...(c.projects || []).map((p) => `${c.name} - ${p.name}`)]);
+
+  const pickEmployee = (name) => {
+    const emp = employees.find((e) => e.name === name);
+    setRow((r) => ({
+      ...r,
+      employeeName: name,
+      ...(editor.mode === 'new' && emp ? {
+        totalSalary: r.totalSalary || (Number(emp.baseSalary) ? String(emp.baseSalary) : ''),
+        salaryType: emp.salaryType || r.salaryType,
+      } : {}),
+    }));
+  };
+
+  const submit = () => {
+    const total = Number(row.totalSalary) || 0;
+    const paid = Number(row.paidAmount) || 0;
+    if (!row.employeeName) return alert('Please choose an employee.');
+    if (total <= 0) return alert('Please enter the salary amount.');
+    if (paid > total) return alert('Paid cannot be more than the total.');
+    const keepPushed = editor.mode === 'edit' && editor.row.status === 'pushed';
+    onSubmit({
+      ...editor.row,
+      ...row,
+      totalSalary: total,
+      paidAmount: paid,
+      status: keepPushed ? 'pushed' : statusFor(total, paid),
+      ...(editor.mode === 'new' ? { id: `man-sal-${Date.now()}`, createdAt: new Date().toISOString() } : {}),
+    }, editor.mode);
+  };
+
+  return (
+    <Drawer
+      open
+      onClose={onClose}
+      title={editor.mode === 'new' ? 'Add salary' : 'Edit salary'}
+      subtitle={editor.mode === 'edit' ? `${editor.row.employeeName} · ${fmtMonth(editor.row.month)}` : 'Record a salary or one-time payout'}
+      footer={<><Btn variant="ghost" onClick={onClose}>Cancel</Btn><Btn onClick={submit}><Icon name="check" size={14} /> Save</Btn></>}
+    >
+      <div className="form-group">
+        <label className="form-label">Employee *</label>
+        <select className="form-select" value={row.employeeName} onChange={(e) => pickEmployee(e.target.value)}>
+          <option value="">Choose employee…</option>
+          {active.map((e) => <option key={e.id} value={e.name}>{e.name}{Number(e.baseSalary) ? ` · AED ${Number(e.baseSalary).toLocaleString()}` : ''}</option>)}
+          {row.employeeName && !active.some((e) => e.name === row.employeeName) && <option value={row.employeeName}>{row.employeeName}</option>}
+        </select>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">Type</label>
+        <Segmented value={row.salaryType === 'monthly' ? 'monthly' : 'project'} onChange={(v) => set('salaryType', v)} options={[{ value: 'monthly', label: '🔄 Monthly' }, { value: 'project', label: '📦 One-time / project' }]} />
+      </div>
+
+      <div className="form-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
+        <div className="form-group">
+          <label className="form-label">Amount (AED) *</label>
+          <input className="form-input" type="number" min="0" value={row.totalSalary} onChange={(e) => set('totalSalary', e.target.value)} placeholder="0" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Already paid</label>
+          <input className="form-input" type="number" min="0" value={row.paidAmount} onChange={(e) => set('paidAmount', e.target.value)} placeholder="0" />
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">Project / client</label>
+        <input className="form-input" list="salary-projects" value={row.projectName || ''} onChange={(e) => set('projectName', e.target.value)} placeholder="e.g. Acme - Website" />
+        <datalist id="salary-projects">{projectOptions.map((p) => <option key={p} value={p} />)}</datalist>
+      </div>
+
+      <div className="form-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
+        <div className="form-group">
+          <label className="form-label">Month</label>
+          <input className="form-input" type="month" value={row.month || ''} onChange={(e) => set('month', e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Linked invoice</label>
+          <select className="form-select" value={row.invoiceId || ''} onChange={(e) => set('invoiceId', e.target.value)}>
+            <option value="">None</option>
+            {invoices.map((inv) => <option key={inv.invoiceNumber} value={inv.invoiceNumber}>#{inv.invoiceNumber} · {inv.clientName}</option>)}
+          </select>
+        </div>
+      </div>
+    </Drawer>
   );
 }

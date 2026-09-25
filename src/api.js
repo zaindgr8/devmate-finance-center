@@ -115,6 +115,12 @@ export async function fetchAllData() {
     employeesOrder = employeesOrderSet ? JSON.parse(employeesOrderSet.value || '[]') : [];
   } catch (_) { employeesOrder = []; }
 
+  const expensesSet = (settings || []).find(s => s.key === 'expenses');
+  let expensesData = [];
+  try {
+    expensesData = expensesSet ? JSON.parse(expensesSet.value || '[]') : [];
+  } catch (_) { expensesData = []; }
+
   const urgentSalaryIdsSet = (settings || []).find(s => s.key === 'urgent_salary_ids');
   let urgentSalaryIds = [];
   try {
@@ -165,6 +171,7 @@ export async function fetchAllData() {
       return idxA - idxB;
     }),
     bills: billsData.map(toCamel),
+    expenses: expensesData.map(toCamel),
     billSections: sectionsData,
     billPayments: billPaymentsData,
     personal: personalData,
@@ -251,6 +258,11 @@ export async function deleteEmployee(id) {
 // Save entire bills array to app_settings as JSON (no separate table needed)
 export async function saveMiscBills(bills) {
   await updateSetting('misc_bills', JSON.stringify(bills.map(toSnake)));
+}
+
+// Save important expenses (fines, renewals, fees…) to app_settings as JSON
+export async function saveExpenses(expenses) {
+  await updateSetting('expenses', JSON.stringify(expenses.map(toSnake)));
 }
 
 // Save personal payments (Allah Share & Savings) to app_settings

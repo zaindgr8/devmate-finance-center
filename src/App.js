@@ -9,11 +9,13 @@ import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
 import EmployeesView from './components/EmployeesView';
 import BillsView from './components/BillsView';
-import { ClientsView, ReportsView } from './components/ClientsReports';
+import ExpensesView from './components/ExpensesView';
+import { ReportsView } from './components/ClientsReports';
+import ClientsView from './components/ClientsView';
 // import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
-import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue, localDateStr } from './utils/helpers';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, saveExpenses, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -27,13 +29,20 @@ const VIEWS = {
   SALARIES: 'salaries',
   EMPLOYEES: 'employees',
   BILLS: 'bills',
+  EXPENSES: 'expenses',
   PERSONAL: 'personal',
+};
+
+const addDaysStr = (dateStr, days) => {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return localDateStr(d);
 };
 
 const VIEW_TITLES = {
   dashboard: 'Dashboard', create: 'New Invoice', history: 'Invoices', clients: 'Clients',
   preview: 'Invoice', reports: 'Reports', finance: 'Finance', salaries: 'Salaries',
-  employees: 'Employees', bills: 'Payments', personal: 'Personal',
+  employees: 'Employees', bills: 'Payments', expenses: 'Expenses', personal: 'Personal',
 };
 
 export default function App() {
@@ -44,6 +53,7 @@ export default function App() {
   const [salaries, setSalaries] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [bills, setBills] = useState([]);
+  const [expenses, setExpenses] = useState([]);
   const [billSections, setBillSections] = useState([]);
   const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } }
   // eslint-disable-next-line no-unused-vars
@@ -138,6 +148,7 @@ export default function App() {
         setNextNum(db.nextNum);
         setEmployees(db.employees || []);
         setBills(db.bills || []);
+        setExpenses(db.expenses || []);
         setBillSections(db.billSections || []);
 
         // Load month-wise payments. Migrate legacy paidAmount from bill templates into current month.
@@ -352,6 +363,11 @@ export default function App() {
       catch (err) { showToast('Failed to save employee to database!', 'error'); }
     }
   }, [showToast]);
+
+  const saveExpensesState = useCallback((v) => {
+    setExpenses(v);
+    persist(saveExpenses(v), 'Saving expenses');
+  }, [persist]);
 
   const saveBills = useCallback(async (v) => {
     setBills(v);
@@ -651,24 +667,6 @@ export default function App() {
     [invoices, finance, salaries, nextNum, checkAndCloneRecurring, saveInvoices, saveFinanceState, showToast]
   );
 
-  const handleReorderInvoices = useCallback(
-    (reorderedInvoices) => {
-      setInvoices(reorderedInvoices);
-      const order = reorderedInvoices.map((i) => String(i.invoiceNumber));
-      persist(updateSetting('invoice_order', JSON.stringify(order)), 'Saving order');
-    },
-    [persist]
-  );
-
-  const handleReorderClients = useCallback(
-    (reorderedClients) => {
-      setClients(reorderedClients);
-      const order = reorderedClients.map((c) => c.name);
-      persist(updateSetting('clients_order', JSON.stringify(order)), 'Saving order');
-    },
-    [persist]
-  );
-
   const handleDeleteClient = useCallback(
     (name) => {
       const count = invoices.filter(i => i.clientName === name).length;
@@ -762,6 +760,8 @@ export default function App() {
   const todayStr = today();
   const overdueCount = invoices.filter(i => isInvoiceOverdue(i, todayStr)).length;
   const thisYM = currentYM();
+  // Overdue or due within 7 days
+  const expenseAlertCount = expenses.filter(e => e.status !== 'paid' && e.dueDate && e.dueDate <= addDaysStr(todayStr, 7)).length;
   const unpaidSalaryCount = salaries.filter(s => s.month <= thisYM && s.status !== 'paid' && s.status !== 'pushed').length;
 
   // Nav items
@@ -798,6 +798,7 @@ export default function App() {
       title: 'MISC PAYMENTS',
       items: [
         { id: VIEWS.BILLS, label: 'Payments', icon: 'receipt' },
+        { id: VIEWS.EXPENSES, label: 'Expenses', icon: 'briefcase', badge: expenseAlertCount, badgeTitle: 'Expenses overdue or due within 7 days' },
         // { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' }, // COMMENTED OUT
       ]
     }
@@ -929,6 +930,7 @@ export default function App() {
               salaries={salaries}
               bills={bills}
               billPayments={billPayments}
+              expenses={expenses}
               urgentSalaryIds={urgentSalaryIds}
               onNew={() => { setEditInv(null); setDraftInv(null); setView(VIEWS.CREATE); }}
               onView={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
@@ -953,6 +955,7 @@ export default function App() {
           {view === VIEWS.HISTORY && (
             <InvoiceHistory
               invoices={invoices}
+              clients={clients}
               salaries={salaries}
               searchQ={searchQ}
               setSearchQ={setSearchQ}
@@ -966,7 +969,6 @@ export default function App() {
               onDelete={handleDeleteInvoice}
               onUpdateStatus={handleUpdateStatus}
               onConfirmPayment={handleConfirmPayment}
-              onReorder={handleReorderInvoices}
             />
           )}
 
@@ -977,7 +979,15 @@ export default function App() {
               onDelete={handleDeleteClient}
               onLedger={(name) => { setClientFilter(name); setSearchQ(''); setView(VIEWS.HISTORY); }}
               onAddClient={addOrUpdateClient}
-              onReorder={handleReorderClients}
+              onPreview={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
+              onNewInvoice={(c) => {
+                setEditInv(null);
+                setDraftInv({
+                  clientName: c.name, clientDesignation: c.designation || '', businessName: c.businessName || '',
+                  clientEmail: c.email || '', clientPhone: c.phone || '', clientAddress: c.address || '', paymentLink: c.paymentLink || '',
+                });
+                setView(VIEWS.CREATE);
+              }}
             />
           )}
 
@@ -1018,7 +1028,6 @@ export default function App() {
               onUpdate={handleUpdateSalary}
               onAdd={handleAddSalary}
               onDelete={handleDeleteSalary}
-              onReorder={(v) => saveSalariesState(v, v)}
               onPushToNextMonth={(updatedRow, newRow) => {
                 const updatedList = salaries.map((r) => r.id === updatedRow.id ? updatedRow : r);
                 if (newRow) updatedList.unshift(newRow);
@@ -1038,11 +1047,6 @@ export default function App() {
               onAdd={(emp) => saveEmployees([emp, ...employees], emp)}
               onUpdate={handleUpdateEmployee}
               onDelete={handleDeleteEmployee}
-              onReorder={(reorderedEmps) => {
-                setEmployees(reorderedEmps);
-                const order = reorderedEmps.map(e => e.id);
-                persist(updateSetting('employees_order', JSON.stringify(order)), 'Saving order');
-              }}
               onAddSalary={handleAddSalary}
               onUpdateSalary={handleUpdateSalary}
               onDeleteSalary={handleDeleteSalary}
@@ -1050,7 +1054,11 @@ export default function App() {
           )}
 
           {view === VIEWS.REPORTS && (
-            <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} billPayments={billPayments} />
+            <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} billPayments={billPayments} expenses={expenses} />
+          )}
+
+          {view === VIEWS.EXPENSES && (
+            <ExpensesView expenses={expenses} onSave={saveExpensesState} onNotify={showToast} />
           )}
 
           {view === VIEWS.BILLS && (
