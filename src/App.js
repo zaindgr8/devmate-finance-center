@@ -12,8 +12,8 @@ import BillsView from './components/BillsView';
 import { ClientsView, ReportsView } from './components/ClientsReports';
 import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
-import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments, saveBillPayments } from './api';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue } from './utils/helpers';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -28,6 +28,12 @@ const VIEWS = {
   EMPLOYEES: 'employees',
   BILLS: 'bills',
   PERSONAL: 'personal',
+};
+
+const VIEW_TITLES = {
+  dashboard: 'Dashboard', create: 'New Invoice', history: 'Invoices', clients: 'Clients',
+  preview: 'Invoice', reports: 'Reports', finance: 'Finance', salaries: 'Salaries',
+  employees: 'Employees', bills: 'Payments', personal: 'Personal',
 };
 
 export default function App() {
@@ -45,21 +51,60 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [previewInv, setPreviewInv] = useState(null);
   const [editInv, setEditInv] = useState(null);
+  const [draftInv, setDraftInv] = useState(null); // prefill for "Duplicate invoice"
+
   const [searchQ, setSearchQ] = useState('');
   const [clientFilter, setClientFilter] = useState('');
   const [toast, setToast] = useState(null);
   const [dbStatus, setDbStatus] = useState('connecting'); // 'connecting', 'connected', 'error'
-  const [isLoggedIn, setIsLoggedIn] = useState(localStorage.getItem('dm_logged_in') === 'true');
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const isLoggedIn = !!session;
   const [mobileNav, setMobileNav] = useState(false);
   const [urgentSalaryIds, setUrgentSalaryIds] = useState([]);
   const [showUrgentPanel, setShowUrgentPanel] = useState(() => {
     return localStorage.getItem('dm_show_urgent_panel') !== 'false';
   });
 
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
+  const toastTimer = useRef(null);
+  const showToast = useCallback((msg, type = 'success') => {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, type, key: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), type === 'error' ? 5000 : 3000);
+  }, []);
+
+  // Fire-and-forget DB writes, but never silently: failures show a toast
+  const persist = useCallback((promise, label = 'Save') => {
+    Promise.resolve(promise).catch((err) => {
+      console.error(`${label} failed:`, err);
+      setDbStatus('error');
+      showToast(`${label} failed. Changes may not be saved: ${err?.message || 'network error'}`, 'error');
+    });
+  }, [showToast]);
+
+  // Side effects stay out of the state updater (StrictMode runs updaters twice)
+  const urgentRef = useRef(urgentSalaryIds);
+  urgentRef.current = urgentSalaryIds;
+  const saveUrgentIds = useCallback((updater) => {
+    const prev = urgentRef.current;
+    const next = updater(prev);
+    if (next === prev) return;
+    urgentRef.current = next;
+    setUrgentSalaryIds(next);
+    persist(updateSetting('urgent_salary_ids', JSON.stringify(next)), 'Updating urgent list');
+  }, [persist]);
+
+  // Supabase Auth session
+  useEffect(() => {
+    let alive = true;
+    getSession().then((s) => { if (alive) { setSession(s); setAuthReady(true); } });
+    const unsub = onAuthChange((s) => { setSession(s); if (!s) setLoading(true); });
+    return () => { alive = false; unsub(); };
+  }, []);
+
+  useEffect(() => {
+    document.title = `${VIEW_TITLES[view] || 'Portal'} · Devmate Finance`;
+  }, [view]);
 
 
   // Load data from Supabase + rollover check
@@ -84,7 +129,7 @@ export default function App() {
           (inv, idx) => inv.status !== db.invoices[idx].status
         );
         if (toActivate.length > 0) {
-          await Promise.all(toActivate.map((inv) => upsertInvoice(inv)));
+          persist(Promise.all(toActivate.map((inv) => upsertInvoice(inv))), 'Activating scheduled invoices');
           showToast(`${toActivate.length} scheduled invoice(s) activated!`);
         }
         setInvoices(activatedInvoices);
@@ -110,8 +155,7 @@ export default function App() {
           // Strip paidAmount from templates so they're clean
           const cleanBills = (db.bills || []).map(b => { const { paidAmount, ...rest } = b; return rest; });
           setBills(cleanBills);
-          await saveMiscBills(cleanBills);
-          await saveBillPayments(loadedPayments);
+          persist(Promise.all([saveMiscBills(cleanBills), saveBillPayments(loadedPayments)]), 'Migrating bill payments');
         }
         setBillPayments(loadedPayments);
         setUrgentSalaryIds(db.urgentSalaryIds || []);
@@ -122,23 +166,23 @@ export default function App() {
         const thisMonth = currentYM();
 
         if (db.lastRollover !== thisMonth) {
-          let finRolled = false;
-          let salRolled = false;
-
-          if (fin.length > 0 && fin.some((r) => r.month !== thisMonth)) {
-            fin = rolloverMonth(fin, thisMonth);
-            await upsertFinance(fin);
-            finRolled = true;
-          }
-
-          if (currentSals.length > 0 && currentSals.some((r) => r.month !== thisMonth)) {
-            currentSals = rolloverSalariesMonth(currentSals, thisMonth);
-            await upsertSalaries(currentSals);
-            salRolled = true;
-          }
-
-          if (finRolled || salRolled || !db.lastRollover) {
+          // Only mark the month as rolled over once the writes succeed, so a
+          // failed rollover is retried next load instead of being skipped forever.
+          try {
+            if (fin.length > 0 && fin.some((r) => r.month !== thisMonth)) {
+              fin = rolloverMonth(fin, thisMonth);
+              await upsertFinance(fin);
+            }
+            if (currentSals.length > 0 && currentSals.some((r) => r.month !== thisMonth)) {
+              currentSals = rolloverSalariesMonth(currentSals, thisMonth);
+              await upsertSalaries(currentSals);
+            }
             await updateSetting('last_rollover', thisMonth);
+          } catch (err) {
+            console.error('Month rollover failed:', err);
+            fin = db.finance || [];
+            currentSals = [...(db.salaries || [])];
+            showToast('Monthly rollover failed. It will retry next time you open the portal.', 'error');
           }
         }
 
@@ -154,6 +198,7 @@ export default function App() {
       }
     }
     init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoggedIn]);
 
   // Keep a ref to invoices to access the latest state in the periodic checker
@@ -207,22 +252,16 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isLoggedIn, showToast]);
 
-  const handleLogin = () => {
-    localStorage.setItem('dm_logged_in', 'true');
-    setIsLoggedIn(true);
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('dm_logged_in');
-    setIsLoggedIn(false);
+  const handleLogout = async () => {
+    await signOut();
     setView(VIEWS.DASHBOARD);
   };
 
   // Save helpers
   const saveInvoices = useCallback((v, invToUpsert) => {
     setInvoices(v);
-    if (invToUpsert) upsertInvoice(invToUpsert);
-  }, []);
+    if (invToUpsert) persist(upsertInvoice(invToUpsert), 'Saving invoice');
+  }, [persist]);
 
   const saveClients = useCallback(async (v, clientToUpsert) => {
     setClients(v);
@@ -238,50 +277,72 @@ export default function App() {
 
   const saveNextNum = useCallback((v) => {
     setNextNum(v);
-    updateSetting('next_invoice_num', v);
-  }, []);
+    persist(updateSetting('next_invoice_num', v), 'Saving invoice counter');
+  }, [persist]);
 
   const saveFinanceState = useCallback((v, finToUpsert) => {
     setFinance(v);
-    if (finToUpsert) upsertFinance(Array.isArray(finToUpsert) ? finToUpsert : [finToUpsert]);
-  }, []);
+    if (finToUpsert) persist(upsertFinance(Array.isArray(finToUpsert) ? finToUpsert : [finToUpsert]), 'Saving finance');
+  }, [persist]);
 
   const saveSalariesState = useCallback((v, salariesToUpsert) => {
     setSalaries(v);
     if (salariesToUpsert) {
-      upsertSalaries(Array.isArray(salariesToUpsert) ? salariesToUpsert : [salariesToUpsert]);
+      persist(upsertSalaries(Array.isArray(salariesToUpsert) ? salariesToUpsert : [salariesToUpsert]), 'Saving salaries');
     }
+  }, [persist]);
+
+  // When a monthly salary is fully paid, queue next month's installment — unless
+  // one already exists (e.g. arrears + current month both paid, or month rollover ran).
+  const withAutoPush = useCallback((list, item) => {
+    if (!item || item.salaryType !== 'monthly' || item.status !== 'paid' || item.autoPushed) {
+      return { list, upserts: [item] };
+    }
+    const pushed = { ...item, autoPushed: true };
+    let next = list.map(r => (r.id === item.id ? pushed : r));
+    const nextMonth = nextYM(item.month);
+    if (hasMonthlyInstallment(next, item, nextMonth)) return { list: next, upserts: [pushed] };
+    const nextRow = {
+      ...item,
+      id: `sal-auto-monthly-${item.id}-${Date.now()}`,
+      month: nextMonth,
+      paidAmount: 0,
+      status: 'unpaid',
+      rolledOver: true,
+      autoPushed: false,
+      originalMonth: item.originalMonth || item.month,
+      createdAt: new Date().toISOString(),
+    };
+    return { list: [nextRow, ...next], upserts: [pushed, nextRow] };
   }, []);
 
-  const handleAutoPushPaidMonthlySalary = useCallback((updatedList, updatedItem) => {
-    if (updatedItem && updatedItem.salaryType === 'monthly' && updatedItem.status === 'paid' && !updatedItem.autoPushed) {
-      updatedItem.autoPushed = true;
-      const nextMonth = nextYM(updatedItem.month);
-      const nextRow = {
-        ...updatedItem,
-        id: `sal-auto-monthly-${updatedItem.id}-${Date.now()}`,
-        month: nextMonth,
-        paidAmount: 0,
-        status: 'unpaid',
-        rolledOver: true,
-        autoPushed: false,
-        createdAt: new Date().toISOString()
-      };
-      const finalList = updatedList.map(r => r.id === updatedItem.id ? updatedItem : r);
-      finalList.unshift(nextRow);
-      return { list: finalList, upsertItems: [updatedItem, nextRow] };
-    }
-    return { list: updatedList, upsertItems: updatedItem };
-  }, []);
+  // Single entry point for salary edits: accepts (id, patch) or ([{id, patch}, ...])
+  const handleUpdateSalary = useCallback((idOrList, patch) => {
+    const patches = Array.isArray(idOrList) ? idOrList : [{ id: idOrList, patch }];
+    let list = [...salaries];
+    const upsertMap = new Map();
+    patches.forEach(({ id, patch: p }) => {
+      const current = list.find(r => r.id === id);
+      if (!current) return;
+      const updated = { ...current, ...p };
+      list = list.map(r => (r.id === id ? updated : r));
+      const res = withAutoPush(list, updated);
+      list = res.list;
+      res.upserts.forEach(u => upsertMap.set(u.id, u));
+    });
+    if (upsertMap.size) saveSalariesState(list, [...upsertMap.values()]);
+  }, [salaries, withAutoPush, saveSalariesState]);
 
-  const handleUpdateSalary = useCallback((id, patch) => {
-    const itemToUpdate = salaries.find(r => r.id === id);
-    if (!itemToUpdate) return;
-    const updatedItem = { ...itemToUpdate, ...patch };
-    const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
-    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
-    saveSalariesState(list, upsertItems);
-  }, [salaries, handleAutoPushPaidMonthlySalary, saveSalariesState]);
+  const handleAddSalary = useCallback((row) => {
+    const { list, upserts } = withAutoPush([row, ...salaries], row);
+    saveSalariesState(list, upserts);
+  }, [salaries, withAutoPush, saveSalariesState]);
+
+  const handleDeleteSalary = useCallback((id) => {
+    saveSalariesState(salaries.filter((r) => r.id !== id));
+    persist(deleteSalary(id), 'Deleting salary');
+    saveUrgentIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : prev));
+  }, [salaries, saveSalariesState, saveUrgentIds, persist]);
 
   const saveEmployees = useCallback(async (v, empToUpsert) => {
     setEmployees(v);
@@ -299,9 +360,8 @@ export default function App() {
 
   const saveBillSectionsState = useCallback(async (v) => {
     setBillSections(v);
-    try { await updateSetting('misc_bill_sections', JSON.stringify(v)); }
-    catch (err) { console.error(err); }
-  }, []);
+    persist(updateSetting('misc_bill_sections', JSON.stringify(v)), 'Saving bill sections');
+  }, [persist]);
 
   const saveBillPaymentsState = useCallback(async (v) => {
     setBillPayments(v);
@@ -316,44 +376,47 @@ export default function App() {
   }, [showToast]);
 
   const handleDeleteBill = useCallback((id) => {
-    setBills(prev => {
-      const updated = prev.filter(b => b.id !== id);
-      saveMiscBills(updated);
-      return updated;
-    });
+    const updated = bills.filter(b => b.id !== id);
+    setBills(updated);
+    persist(saveMiscBills(updated), 'Deleting bill');
     showToast('Bill removed', 'error');
-  }, []);
+  }, [bills, persist, showToast]);
 
   const handleDeleteEmployee = useCallback((id) => {
     setEmployees(prev => prev.filter(e => e.id !== id));
-    deleteEmployee(id);
+    persist(deleteEmployee(id), 'Deleting employee');
     showToast('Employee removed', 'error');
-  }, []);
+  }, [persist, showToast]);
+
+  // Renaming an employee keeps their salary records linked (salaries match by name)
+  const handleUpdateEmployee = useCallback((id, emp) => {
+    const prev = employees.find(e => e.id === id);
+    saveEmployees(employees.map(e => (e.id === id ? emp : e)), emp);
+    const oldName = (prev?.name || '').trim();
+    const newName = (emp.name || '').trim();
+    if (oldName && newName && oldName !== newName) {
+      const renamed = salaries
+        .filter(s => (s.employeeName || '').trim().toLowerCase() === oldName.toLowerCase())
+        .map(s => ({ ...s, employeeName: newName }));
+      if (renamed.length) {
+        saveSalariesState(salaries.map(s => renamed.find(r => r.id === s.id) || s), renamed);
+        showToast(`Renamed across ${renamed.length} salary record(s)`);
+      }
+    }
+  }, [employees, salaries, saveEmployees, saveSalariesState, showToast]);
+
 
   const handleToggleUrgent = useCallback((id) => {
-    setUrgentSalaryIds((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
-      updateSetting('urgent_salary_ids', JSON.stringify(next));
-      return next;
-    });
-  }, []);
+    saveUrgentIds(prev => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }, [saveUrgentIds]);
 
   const handleAddUrgent = useCallback((id) => {
-    setUrgentSalaryIds((prev) => {
-      if (prev.includes(id)) return prev;
-      const next = [...prev, id];
-      updateSetting('urgent_salary_ids', JSON.stringify(next));
-      return next;
-    });
-  }, []);
+    saveUrgentIds(prev => (prev.includes(id) ? prev : [...prev, id]));
+  }, [saveUrgentIds]);
 
   const handleRemoveUrgent = useCallback((id) => {
-    setUrgentSalaryIds((prev) => {
-      const next = prev.filter((x) => x !== id);
-      updateSetting('urgent_salary_ids', JSON.stringify(next));
-      return next;
-    });
-  }, []);
+    saveUrgentIds(prev => (prev.includes(id) ? prev.filter((x) => x !== id) : prev));
+  }, [saveUrgentIds]);
 
   const toggleUrgentPanel = useCallback(() => {
     setShowUrgentPanel((prev) => {
@@ -377,6 +440,7 @@ export default function App() {
           email: d.clientEmail || d.email || ex.email,
           phone: d.clientPhone || d.phone || ex.phone,
           address: d.clientAddress || d.address || ex.address,
+          paymentLink: d.paymentLink || ex.paymentLink,
           projects: d.projects || ex.projects,
         };
         saveClients(
@@ -391,6 +455,7 @@ export default function App() {
           email: d.clientEmail || d.email,
           phone: d.clientPhone || d.phone,
           address: d.clientAddress || d.address,
+          paymentLink: d.paymentLink || '',
           projects: d.projects || [],
           createdAt: today(),
         };
@@ -439,17 +504,31 @@ export default function App() {
       setEditInv(null);
       setView(VIEWS.HISTORY);
     },
-    [editInv, invoices, nextNum, finance, salaries, addOrUpdateClient, saveInvoices, saveNextNum, saveFinanceState, saveSalariesState]
+    [editInv, invoices, nextNum, finance, salaries, addOrUpdateClient, saveInvoices, saveNextNum, saveFinanceState, saveSalariesState, showToast]
   );
 
   const handleDeleteInvoice = useCallback(
     (num) => {
-      if (!window.confirm(`Delete invoice #${num}?`)) return;
+      // Salaries auto-created from this invoice that were never paid go with it; paid history is kept
+      const orphanSalaries = salaries.filter(s => s.invoiceId === num && !(Number(s.paidAmount) > 0) && s.status !== 'paid' && s.status !== 'pushed');
+      const extra = orphanSalaries.length ? `\n\nThis also removes ${orphanSalaries.length} unpaid salary record(s) linked to it.` : '';
+      if (!window.confirm(`Delete invoice #${num}?${extra}`)) return;
       saveInvoices(invoices.filter((i) => i.invoiceNumber !== num));
-      deleteInvoice(String(num));
+      persist(deleteInvoice(String(num)), 'Deleting invoice');
+      const finRows = finance.filter(r => r.invoiceId === num);
+      if (finRows.length) {
+        saveFinanceState(finance.filter(r => r.invoiceId !== num));
+        finRows.forEach(r => persist(deleteFinance(r.id), 'Deleting finance row'));
+      }
+      if (orphanSalaries.length) {
+        const ids = new Set(orphanSalaries.map(s => s.id));
+        saveSalariesState(salaries.filter(s => !ids.has(s.id)));
+        orphanSalaries.forEach(s => persist(deleteSalary(s.id), 'Deleting salary'));
+        saveUrgentIds(prev => (prev.some(id => ids.has(id)) ? prev.filter(id => !ids.has(id)) : prev));
+      }
       showToast('Invoice deleted', 'error');
     },
-    [invoices, saveInvoices]
+    [invoices, finance, salaries, saveInvoices, saveFinanceState, saveSalariesState, saveUrgentIds, persist, showToast]
   );
 
   const checkAndCloneRecurring = useCallback(
@@ -473,33 +552,29 @@ export default function App() {
           }
         };
 
-        // Clone invoice to next month
+        // Clone invoice to next month (without the original's payment/schedule stamps)
+        const stripStamps = ({ paid_at, scheduled_date, ...rest } = {}) => ({ ...rest, clonedToNextMonth: false });
+        const { paidAt: _paidAt, scheduledDate: _scheduledDate, ...invoiceBase } = invoice;
         const clonedInvoice = {
-          ...invoice,
+          ...invoiceBase,
           invoiceNumber: String(nextInvoiceNum),
           status: 'pending',
-          payingNow: 0,
+          payingNow: Number(invoice.totalPayment) || 0,
           remaining: invoice.totalPayment,
           date: nextDate,
           dueDate: nextDueDate,
           createdAt: new Date().toISOString(),
-          financeData: {
-            ...(invoice.financeData || {}),
-            clonedToNextMonth: false
-          },
-          financeRaw: {
-            ...(invoice.financeRaw || {}),
-            clonedToNextMonth: false
-          }
+          financeData: stripStamps(invoice.financeData),
+          financeRaw: stripStamps(invoice.financeRaw),
         };
 
         const finRow = createFinanceRecord(clonedInvoice);
         const newSalaries = extractSalariesFromInvoice(clonedInvoice);
 
         // Update setting & sync DB
-        saveNextNum(nextInvoiceNum + 1);
         await upsertInvoice(clonedInvoice);
         await upsertInvoice(updatedOriginal);
+        saveNextNum(nextInvoiceNum + 1);
 
         const newList = [
           clonedInvoice,
@@ -526,9 +601,16 @@ export default function App() {
       if (!inv) return;
       // Stamp paidAt when marking as paid
       const paidAt = st === 'paid' ? new Date().toISOString() : inv.paidAt;
-      // Use payingNow if set, otherwise fall back to totalPayment
-      const effectivePaid = Number(inv.payingNow) > 0 ? Number(inv.payingNow) : Number(inv.totalPayment) || 0;
-      const updatedItem = { ...inv, status: st, payingNow: effectivePaid, ...(paidAt ? { paidAt } : {}) };
+      // "Mark paid" settles the full amount; otherwise keep what was recorded
+      const total = Number(inv.totalPayment) || 0;
+      const effectivePaid = st === 'paid' ? total : (Number(inv.payingNow) > 0 ? Number(inv.payingNow) : total);
+      const updatedItem = {
+        ...inv,
+        status: st,
+        payingNow: effectivePaid,
+        remaining: Math.max(0, total - effectivePaid),
+        ...(paidAt ? { paidAt } : {}),
+      };
       const updatedList = invoices.map((i) => (i.invoiceNumber === num ? updatedItem : i));
 
       // Compute updated finance list (update paidAmount when marking paid/partial)
@@ -571,29 +653,39 @@ export default function App() {
     (reorderedInvoices) => {
       setInvoices(reorderedInvoices);
       const order = reorderedInvoices.map((i) => String(i.invoiceNumber));
-      updateSetting('invoice_order', JSON.stringify(order));
+      persist(updateSetting('invoice_order', JSON.stringify(order)), 'Saving order');
     },
-    []
+    [persist]
   );
 
   const handleReorderClients = useCallback(
     (reorderedClients) => {
       setClients(reorderedClients);
       const order = reorderedClients.map((c) => c.name);
-      updateSetting('clients_order', JSON.stringify(order));
+      persist(updateSetting('clients_order', JSON.stringify(order)), 'Saving order');
     },
-    []
+    [persist]
   );
 
   const handleDeleteClient = useCallback(
     (name) => {
-      if (!window.confirm(`Remove "${name}"?`)) return;
+      const count = invoices.filter(i => i.clientName === name).length;
+      if (!window.confirm(`Remove "${name}"?${count ? `\n\nTheir ${count} invoice(s) are kept.` : ''}`)) return;
       saveClients(clients.filter((c) => c.name !== name));
-      deleteClient(name);
+      persist(deleteClient(name), 'Deleting client');
       showToast('Client removed', 'error');
     },
-    [clients, saveClients]
+    [clients, invoices, saveClients, persist, showToast]
   );
+
+  const handleDuplicateInvoice = useCallback((inv) => {
+    const { invoiceNumber, createdAt, paidAt, scheduledDate, id, financeRaw, ...rest } = inv;
+    const { paid_at, scheduled_date, clonedToNextMonth, ...fin } = inv.financeData || financeRaw || {};
+    setEditInv(null);
+    setDraftInv({ ...rest, date: today(), dueDate: '', status: 'pending', payingNow: Number(inv.totalPayment) || 0, financeData: fin });
+    setView(VIEWS.CREATE);
+    showToast(`Duplicating #${invoiceNumber}. Review and save`);
+  }, [showToast]);
 
   // Confirm a pending invoice — sets status to paid/partial and updates finance record
   const handleConfirmPayment = useCallback(
@@ -607,7 +699,7 @@ export default function App() {
         : effectivePaid > 0 ? 'partial' : 'unpaid';
       // Stamp paidAt with the exact moment Confirm is clicked
       const paidAt = new Date().toISOString();
-      const updatedInv = { ...inv, status: newStatus, payingNow: effectivePaid, paidAt };
+      const updatedInv = { ...inv, status: newStatus, payingNow: effectivePaid, remaining: Math.max(0, (Number(inv.totalPayment) || 0) - effectivePaid), paidAt };
       const updatedList = invoices.map(i => i.invoiceNumber === num ? updatedInv : i);
 
       // Compute updated finance list (pure calculation — no state update yet)
@@ -663,16 +755,11 @@ export default function App() {
     });
   }, [finance, salaries]);
 
-  // Stats — only count confirmed (non-pending) invoices in received/outstanding
-  const globalTotal = clients.reduce((sum, c) => {
-    const ci = invoices.filter((i) => i.clientName === c.name);
-    const projectsTotal = (c.projects || []).reduce((s, p) => s + (Number(p.total) || 0), 0);
-    const invoiced = ci.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
-    return sum + (projectsTotal > 0 ? projectsTotal : invoiced);
-  }, 0);
-  const globalInvoiced = invoices.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
-  const globalReceived = invoices.filter(i => i.status !== 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
-  const globalPending = Math.max(0, globalTotal - globalReceived);
+  // Nav badges
+  const todayStr = today();
+  const overdueCount = invoices.filter(i => isInvoiceOverdue(i, todayStr)).length;
+  const thisYM = currentYM();
+  const unpaidSalaryCount = salaries.filter(s => s.month <= thisYM && s.status !== 'paid' && s.status !== 'pushed').length;
 
   // Nav items
   const navGroups = [
@@ -687,7 +774,7 @@ export default function App() {
       title: 'INVOICES',
       items: [
         { id: VIEWS.CREATE, label: 'New Invoice', icon: 'plus' },
-        { id: VIEWS.HISTORY, label: 'Invoices', icon: 'file' },
+        { id: VIEWS.HISTORY, label: 'Invoices', icon: 'file', badge: overdueCount, badgeTitle: 'Overdue invoices' },
       ]
     },
     {
@@ -701,7 +788,7 @@ export default function App() {
       title: 'EMPLOYEES',
       items: [
         { id: VIEWS.EMPLOYEES, label: 'Employees', icon: 'users' },
-        { id: VIEWS.SALARIES, label: 'Salaries', icon: 'salaries' },
+        { id: VIEWS.SALARIES, label: 'Salaries', icon: 'salaries', badge: unpaidSalaryCount, badgeTitle: 'Unpaid salaries up to this month', soft: true },
       ]
     },
     {
@@ -714,8 +801,9 @@ export default function App() {
   ];
 
   // Auth Check
+  if (!authReady) return <div className="app-container" />;
   if (!isLoggedIn) {
-    return <LoginView onLogin={handleLogin} />;
+    return <LoginView />;
   }
 
   // Loading
@@ -733,7 +821,7 @@ export default function App() {
             }}
             className="animate-spin"
           />
-          <div style={{ color: 'var(--text-light)', fontSize: 14 }}>Loading Devmate Invoicing...</div>
+          <div style={{ color: 'var(--text-light)', fontSize: 14 }}>Loading your ledger…</div>
         </div>
       </div>
     );
@@ -743,8 +831,9 @@ export default function App() {
     <div className="app-container">
       {/* Toast */}
       {toast && (
-        <div className={`toast ${toast.type === 'error' ? 'toast-error' : 'toast-success'}`}>
-          {toast.msg}
+        <div key={toast.key} role="status" className={`toast ${toast.type === 'error' ? 'toast-error' : 'toast-success'}`} onClick={() => setToast(null)}>
+          <Icon name={toast.type === 'error' ? 'alert' : 'check'} size={16} />
+          <span>{toast.msg}</span>
         </div>
       )}
 
@@ -798,12 +887,16 @@ export default function App() {
                     onClick={() => {
                       setView(n.id);
                       setEditInv(null);
+                      setDraftInv(null);
                       setMobileNav(false);
                     }}
                     className={`sidebar-nav-btn ${view === n.id ? 'active' : ''}`}
                   >
                     <Icon name={n.icon} size={16} />
-                    {n.label}
+                    <span style={{ flex: 1, textAlign: 'left' }}>{n.label}</span>
+                    {n.badge > 0 && (
+                      <span className={`nav-badge ${n.soft ? 'nav-badge-soft' : ''}`} title={n.badgeTitle}>{n.badge}</span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -811,30 +904,16 @@ export default function App() {
           </nav>
 
           <div className="sidebar-footer">
-            <div className="sidebar-footer-loc">DUBAI · MUSCAT · NY</div>
-            <div style={{ marginBottom: 12 }}>management@devmatesolutions.com</div>
-            <button 
-              onClick={handleLogout}
-              style={{
-                width: '100%',
-                padding: '10px',
-                background: 'rgba(239, 68, 68, 0.08)',
-                color: '#ef4444',
-                border: '1px solid rgba(239, 68, 68, 0.15)',
-                borderRadius: '8px',
-                fontSize: '12px',
-                fontWeight: '600',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                transition: 'all 0.2s'
-              }}
-            >
-              <Icon name="plus" size={14} style={{ transform: 'rotate(45deg)' }} />
-              Logout
-            </button>
+            <div className="sidebar-user">
+              <div className="sidebar-user-avatar">{(session?.user?.email || '?')[0].toUpperCase()}</div>
+              <div style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                <div className="sidebar-user-email" title={session?.user?.email}>{session?.user?.email}</div>
+                <div className="sidebar-footer-loc">DUBAI · MUSCAT · NY</div>
+              </div>
+              <button onClick={handleLogout} className="sidebar-logout" title="Sign out" aria-label="Sign out">
+                <Icon name="logout" size={16} />
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -844,22 +923,27 @@ export default function App() {
             <Dashboard
               invoices={invoices}
               clients={clients}
-              globalTotal={globalTotal}
-              globalInvoiced={globalInvoiced}
-              globalReceived={globalReceived}
-              globalPending={globalPending}
-              onNew={() => { setEditInv(null); setView(VIEWS.CREATE); }}
+              salaries={salaries}
+              bills={bills}
+              billPayments={billPayments}
+              urgentSalaryIds={urgentSalaryIds}
+              onNew={() => { setEditInv(null); setDraftInv(null); setView(VIEWS.CREATE); }}
               onView={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
+              onNavigate={setView}
+              onConfirmPayment={handleConfirmPayment}
             />
           )}
 
           {view === VIEWS.CREATE && (
             <InvoiceForm
+              key={editInv?.invoiceNumber || (draftInv ? `draft-${draftInv.clientName}` : 'new')}
               clients={clients}
               finance={finance}
+              employees={employees}
               editInv={editInv}
-              onSave={handleSaveInvoice}
-              onCancel={() => { setEditInv(null); setView(VIEWS.HISTORY); }}
+              draftInv={draftInv}
+              onSave={(inv) => { handleSaveInvoice(inv); setDraftInv(null); }}
+              onCancel={() => { setEditInv(null); setDraftInv(null); setView(VIEWS.HISTORY); }}
             />
           )}
 
@@ -871,9 +955,11 @@ export default function App() {
               setSearchQ={setSearchQ}
               clientFilter={clientFilter}
               setClientFilter={setClientFilter}
-              onNew={() => { setEditInv(null); setView(VIEWS.CREATE); }}
+              onNew={() => { setEditInv(null); setDraftInv(null); setView(VIEWS.CREATE); }}
               onPreview={(inv) => { setPreviewInv(inv); setView(VIEWS.PREVIEW); }}
-              onEdit={(inv) => { setEditInv(inv); setView(VIEWS.CREATE); }}
+              onEdit={(inv) => { setEditInv(inv); setDraftInv(null); setView(VIEWS.CREATE); }}
+              onDuplicate={handleDuplicateInvoice}
+              onNotify={showToast}
               onDelete={handleDeleteInvoice}
               onUpdateStatus={handleUpdateStatus}
               onConfirmPayment={handleConfirmPayment}
@@ -894,9 +980,11 @@ export default function App() {
 
           {view === VIEWS.PREVIEW && previewInv && (
             <InvoicePreview
-              inv={previewInv}
+              inv={invoices.find(i => i.invoiceNumber === previewInv.invoiceNumber) || previewInv}
               salaries={salaries}
               onBack={() => setView(VIEWS.HISTORY)}
+              onEdit={(inv) => { setEditInv(inv); setDraftInv(null); setView(VIEWS.CREATE); }}
+              onNotify={showToast}
             />
           )}
 
@@ -924,48 +1012,9 @@ export default function App() {
               invoices={invoices}
               clients={clients}
               employees={employees}
-              onUpdate={(id, patch) => {
-                if (Array.isArray(id)) {
-                  let baseList = [...salaries];
-                  const upserts = [];
-                  id.forEach(({ id: itemId, patch: itemPatch }) => {
-                    const idx = baseList.findIndex(r => r.id === itemId);
-                    if (idx !== -1) {
-                      const updatedItem = { ...baseList[idx], ...itemPatch };
-                      baseList[idx] = updatedItem;
-                      upserts.push(updatedItem);
-                    }
-                  });
-                  let finalList = [...baseList];
-                  const finalUpserts = [...upserts];
-                  upserts.forEach(item => {
-                    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(finalList, item);
-                    finalList = list;
-                    if (Array.isArray(upsertItems)) {
-                      upsertItems.forEach(ui => {
-                        if (!finalUpserts.find(x => x.id === ui.id)) finalUpserts.push(ui);
-                      });
-                    } else if (upsertItems) {
-                      if (!finalUpserts.find(x => x.id === upsertItems.id)) finalUpserts.push(upsertItems);
-                    }
-                  });
-                  saveSalariesState(finalList, finalUpserts);
-                  return;
-                }
-                const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
-                const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
-                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
-                saveSalariesState(list, upsertItems);
-              }}
-              onAdd={(row) => {
-                const baseList = [row, ...salaries];
-                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, row);
-                saveSalariesState(list, upsertItems);
-              }}
-              onDelete={(id) => {
-                saveSalariesState(salaries.filter((r) => r.id !== id));
-                deleteSalary(id);
-              }}
+              onUpdate={handleUpdateSalary}
+              onAdd={handleAddSalary}
+              onDelete={handleDeleteSalary}
               onReorder={(v) => saveSalariesState(v, v)}
               onPushToNextMonth={(updatedRow, newRow) => {
                 const updatedList = salaries.map((r) => r.id === updatedRow.id ? updatedRow : r);
@@ -984,60 +1033,21 @@ export default function App() {
               invoices={invoices}
               clients={clients}
               onAdd={(emp) => saveEmployees([emp, ...employees], emp)}
-              onUpdate={(id, emp) => saveEmployees(employees.map(e => e.id === id ? emp : e), emp)}
+              onUpdate={handleUpdateEmployee}
               onDelete={handleDeleteEmployee}
               onReorder={(reorderedEmps) => {
                 setEmployees(reorderedEmps);
                 const order = reorderedEmps.map(e => e.id);
-                updateSetting('employees_order', JSON.stringify(order));
+                persist(updateSetting('employees_order', JSON.stringify(order)), 'Saving order');
               }}
-              onAddSalary={(row) => {
-                const baseList = [row, ...salaries];
-                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, row);
-                saveSalariesState(list, upsertItems);
-              }}
-              onUpdateSalary={(id, patch) => {
-                if (Array.isArray(id)) {
-                  let baseList = [...salaries];
-                  const upserts = [];
-                  id.forEach(({ id: itemId, patch: itemPatch }) => {
-                    const idx = baseList.findIndex(r => r.id === itemId);
-                    if (idx !== -1) {
-                      const updatedItem = { ...baseList[idx], ...itemPatch };
-                      baseList[idx] = updatedItem;
-                      upserts.push(updatedItem);
-                    }
-                  });
-                  let finalList = [...baseList];
-                  const finalUpserts = [...upserts];
-                  upserts.forEach(item => {
-                    const { list, upsertItems } = handleAutoPushPaidMonthlySalary(finalList, item);
-                    finalList = list;
-                    if (Array.isArray(upsertItems)) {
-                      upsertItems.forEach(ui => {
-                        if (!finalUpserts.find(x => x.id === ui.id)) finalUpserts.push(ui);
-                      });
-                    } else if (upsertItems) {
-                      if (!finalUpserts.find(x => x.id === upsertItems.id)) finalUpserts.push(upsertItems);
-                    }
-                  });
-                  saveSalariesState(finalList, finalUpserts);
-                  return;
-                }
-                const updatedItem = { ...salaries.find(r => r.id === id), ...patch };
-                const baseList = salaries.map((r) => r.id === id ? updatedItem : r);
-                const { list, upsertItems } = handleAutoPushPaidMonthlySalary(baseList, updatedItem);
-                saveSalariesState(list, upsertItems);
-              }}
-              onDeleteSalary={(id) => {
-                saveSalariesState(salaries.filter((r) => r.id !== id));
-                deleteSalary(id);
-              }}
+              onAddSalary={handleAddSalary}
+              onUpdateSalary={handleUpdateSalary}
+              onDeleteSalary={handleDeleteSalary}
             />
           )}
 
           {view === VIEWS.REPORTS && (
-            <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} />
+            <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} billPayments={billPayments} />
           )}
 
           {view === VIEWS.BILLS && (

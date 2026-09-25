@@ -1,16 +1,5 @@
 import React, { useState, useCallback, useEffect } from 'react';
-import { nextYM } from '../utils/helpers';
-
-function fmtMonth(ym) {
-  const [y, m] = ym.split('-');
-  return new Date(Number(y), Number(m) - 1, 1)
-    .toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-}
-
-function currentYM() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
+import { nextYM, fmtMonth, currentYM, downloadCSV } from '../utils/helpers';
 
 const EMPTY_SALARY_ROW = {
   employeeName: '',
@@ -70,7 +59,7 @@ function EditCell({ value, onSave, prefix = '', type = 'number', style = {} }) {
 }
 
 function StatusPill({ status }) {
-  const map = { paid: ['#0D9F5F', '#ECFDF3'], partial: ['#D97706', '#FFFBEB'], unpaid: ['#DC143C', '#FEF2F4'] };
+  const map = { paid: ['#0D9F5F', '#ECFDF3'], partial: ['#B45309', '#FFFBEB'], unpaid: ['#DC143C', '#FEF2F4'] };
   const [clr, bg] = map[status] || map.unpaid;
   return (
     <span style={{
@@ -238,7 +227,8 @@ function EmployeeEditCell({ value, employees = [], onSave }) {
 
 export default function SalariesView({ salaries = [], invoices = [], clients = [], employees = [], onAdd, onUpdate, onDelete, onReorder, onPushToNextMonth, urgentSalaryIds = [], onToggleUrgent }) {
   const months = [...new Set(salaries.map((s) => s.month))].sort((a, b) => b.localeCompare(a));
-  const [activeMonth, setActiveMonth] = useState(months[0] || currentYM());
+  // Open on the current month (auto-pushed installments can make next month the newest tab)
+  const [activeMonth, setActiveMonth] = useState(months.includes(currentYM()) ? currentYM() : (months[0] || currentYM()));
   const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'monthly' | 'project' | 'paid'
   const [showAddRow, setShowAddRow] = useState(false);
   const [newRow, setNewRow] = useState({ ...EMPTY_SALARY_ROW, month: activeMonth, salaryType: 'monthly' });
@@ -324,7 +314,8 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
     const val = stringFields.includes(field) ? rawVal : Number(rawVal) || 0;
     const updated = { ...row, [field]: val };
 
-    if (field !== 'status') {
+    // 'pushed' rows were settled by carrying the balance forward; keep them closed
+    if (field !== 'status' && row.status !== 'pushed') {
       const total = Number(updated.totalSalary) || 0;
       const paid = Number(updated.paidAmount) || 0;
       if (paid >= total && total > 0) updated.status = 'paid';
@@ -400,6 +391,22 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
     setDragId(null); setDragOverId(null);
   };
 
+  const payInFull = (row) => {
+    const total = Number(row.totalSalary) || 0;
+    if (total <= 0) return;
+    onUpdate(row.id, { paidAmount: total, status: 'paid' });
+  };
+
+  const exportCSV = () => {
+    const out = [['Employee', 'Project / Client', 'Type', 'Invoice', 'Month', 'Total (AED)', 'Paid (AED)', 'Remaining (AED)', 'Status']];
+    filteredRows.forEach(r => {
+      const t = Number(r.totalSalary) || 0;
+      const p = Number(r.paidAmount) || 0;
+      out.push([r.employeeName, r.projectName || '', r.salaryType === 'monthly' ? 'monthly' : 'one-time', r.invoiceId || '', r.month, t, p, Math.max(0, t - p), r.status || 'unpaid']);
+    });
+    downloadCSV(`salaries-${activeMonth}-${activeCategory}.csv`, out);
+  };
+
   const handlePushNextMonth = (row) => {
     if (row.status === 'paid') {
       alert('This salary is already fully paid!');
@@ -456,6 +463,9 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
           + Custom Salary
         </button>
       </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: -12, marginBottom: 12 }}>
+        <button className="link-btn" onClick={exportCSV} disabled={filteredRows.length === 0}>⬇ Export {fmtMonth(activeMonth)} to CSV</button>
+      </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
         {(months.length === 0 ? [currentYM()] : months).map((m) => (
@@ -470,7 +480,7 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
       </div>
 
       {/* Category Tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '2px solid var(--border)', paddingBottom: 0 }}>
+      <div className="tab-bar">
         {[
           { id: 'all', label: '📋 All', count: rows.length },
           { id: 'monthly', label: 'Salaries (Monthly)', count: rows.filter(s => s.salaryType === 'monthly' && s.status !== 'paid' && s.status !== 'pushed').length },
@@ -520,7 +530,7 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
         })}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
+      <div className="summary-3">
         {[
           { label: 'Total Salary Pool', val: totalPool, color: 'var(--text)' },
           { label: 'Total Paid Out', val: totalPaid, color: 'var(--success)' },
@@ -567,7 +577,7 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+          <div className="form-grid-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Employee Name</div>
               <select
@@ -623,29 +633,32 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
               </div>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Status</div>
-              <select
-                value={newRow.status}
-                onChange={(e) => setNewRow((r) => ({ ...r, status: e.target.value }))}
-                className="form-select"
-              >
-                <option value="unpaid">Unpaid</option>
-                <option value="partial">Partial</option>
-                <option value="paid">Paid</option>
-              </select>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Month</div>
+              <input type="month" className="form-input" value={newRow.month || activeMonth} onChange={(e) => setNewRow((r) => ({ ...r, month: e.target.value }))} />
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
             <button onClick={() => setShowAddRow(false)} style={{ padding: '8px 18px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontFamily: 'Poppins, sans-serif', fontSize: 13 }}>Cancel</button>
             <button
               onClick={() => {
+                const total = Number(newRow.totalSalary) || 0;
+                const paid = Number(newRow.paidAmount) || 0;
+                if (!newRow.employeeName) { alert('Please select an employee.'); return; }
+                if (total <= 0) { alert('Please enter the total salary.'); return; }
+                if (paid > total) { alert('Paid amount cannot be more than the total salary.'); return; }
                 const row = {
                   ...newRow,
+                  month: newRow.month || activeMonth,
+                  totalSalary: total,
+                  paidAmount: paid,
+                  // Status always follows the amounts
+                  status: paid >= total ? 'paid' : paid > 0 ? 'partial' : 'unpaid',
                   id: `man-sal-${Date.now()}`,
                   createdAt: new Date().toISOString(),
                 };
                 onAdd(row);
                 setShowAddRow(false);
+                if (row.month !== activeMonth) setActiveMonth(row.month);
               }}
               style={{ padding: '8px 18px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontFamily: 'Poppins, sans-serif', fontSize: 13 }}
             >
@@ -745,13 +758,16 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
                           >🚨</button>
                         )}
                         {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
-                          <button
-                            onClick={() => handlePushNextMonth(row)}
-                            style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '4px 8px', fontSize: 13, fontWeight: 600, marginRight: 8, fontFamily: 'Poppins, sans-serif' }}
-                            title="Push to Next Month"
-                          >
-                            Push ⏭️
-                          </button>
+                          <>
+                            <button onClick={() => payInFull(row)} className="chip-btn chip-success" title="Record the full remaining amount as paid">✓ Pay</button>
+                            <button
+                              onClick={() => handlePushNextMonth(row)}
+                              style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: '4px 8px', fontSize: 13, fontWeight: 600, marginRight: 8, fontFamily: 'Poppins, sans-serif' }}
+                              title="Push to Next Month"
+                            >
+                              Push ⏭️
+                            </button>
+                          </>
                         )}
                         <button
                           onClick={() => { if (window.confirm('Delete this salary record?')) onDelete(row.id); }}
@@ -904,6 +920,9 @@ export default function SalariesView({ salaries = [], invoices = [], clients = [
                               <StatusPill status={rowStatus === 'pushed' ? 'paid' : rowStatus} />
                             </td>
                             <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                              {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
+                                <button onClick={() => payInFull(row)} className="chip-btn chip-success" title="Record the full remaining amount as paid">✓ Pay</button>
+                              )}
                               {rowStatus !== 'paid' && rowStatus !== 'pushed' && (
                                 <button
                                   onClick={() => handlePushNextMonth(row)}

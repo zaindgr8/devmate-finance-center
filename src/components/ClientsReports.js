@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
 import Icon from './Icon';
-import { Btn, StatCard, Input } from './UI';
+import { Btn, Input } from './UI';
+import { currentYM, fmtMonth, fmtAED, toAED, invoiceReceived, invoiceOutstanding, isInvoiceOverdue, billsSummary, downloadCSV } from '../utils/helpers';
+
+const EMPTY_CLIENT = { clientName: '', clientDesignation: '', businessName: '', clientEmail: '', clientPhone: '', clientAddress: '', paymentLink: '' };
 
 /* ═══ CLIENTS VIEW ═══ */
 export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient, onReorder }) {
   const [showAdd, setShowAdd] = useState(false);
-  const [newC, setNewC] = useState({ clientName: '', clientDesignation: '', businessName: '', clientEmail: '', clientPhone: '', clientAddress: '', paymentLink: '' });
+  const [editingName, setEditingName] = useState(null);
+  const [newC, setNewC] = useState(EMPTY_CLIENT);
+  const [q, setQ] = useState('');
   const [viewProjClient, setViewProjClient] = useState(null);
   const [showAddProj, setShowAddProj] = useState(false);
   const [newProj, setNewProj] = useState({ name: '', type: 'One Time', total: '', details: '' });
@@ -50,9 +55,31 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
       alert('Client Name and Business Name are required.');
       return;
     }
-    onAddClient(newC);
-    setNewC({ clientName: '', clientDesignation: '', businessName: '', clientEmail: '', clientPhone: '', clientAddress: '', paymentLink: '' });
+    if (!editingName && clients.some(c => c.name.trim().toLowerCase() === newC.clientName.trim().toLowerCase())) {
+      alert('A client with this name already exists. Use Edit on their card instead.');
+      return;
+    }
+    // Existing clients are matched by name, so blank fields would keep old values; send explicit values
+    onAddClient({ ...newC, clientName: newC.clientName.trim() });
+    setNewC(EMPTY_CLIENT);
+    setEditingName(null);
     setShowAdd(false);
+  };
+
+  const startEdit = (c) => {
+    setNewC({
+      clientName: c.name, clientDesignation: c.designation || '', businessName: c.businessName || '',
+      clientEmail: c.email || '', clientPhone: c.phone || '', clientAddress: c.address || '', paymentLink: c.paymentLink || '',
+    });
+    setEditingName(c.name);
+    setShowAdd(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeleteProj = (projId) => {
+    const clientObj = clients.find(c => c.name === viewProjClient);
+    if (!clientObj || !window.confirm('Delete this project? Invoices linked to it are kept.')) return;
+    onAddClient({ ...clientObj, projects: (clientObj.projects || []).filter(p => p.id !== projId) });
   };
 
   const handleAddProj = () => {
@@ -76,39 +103,52 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
   const stats = (c) => {
     const ci = invoices.filter((i) => i.clientName === c.name);
     const projectsTotal = (c.projects || []).reduce((sum, p) => sum + (Number(p.total) || 0), 0);
-    const invoiced = ci.reduce((s, i) => s + (Number(i.totalPayment) || 0), 0);
-    const received = ci.filter((i) => i.status !== 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
+    const invoiced = ci.reduce((s, i) => s + toAED(i.totalPayment, i.currency), 0);
+    const received = ci.reduce((s, i) => s + toAED(invoiceReceived(i), i.currency), 0);
     const finalTotal = projectsTotal > 0 ? projectsTotal : invoiced;
     const pending = Math.max(0, finalTotal - received);
+    const overdue = ci.filter(i => isInvoiceOverdue(i)).length;
     return {
       total: finalTotal,
       invoiced: invoiced,
       received: received,
       pending: pending,
+      overdue,
+      progress: finalTotal > 0 ? Math.min(100, (received / finalTotal) * 100) : 0,
     };
   };
 
   return (
     <div className="animate-fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Clients</h1>
-        <Btn onClick={() => setShowAdd(!showAdd)}>+ Add Client</Btn>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 700 }}>Clients</h1>
+          <div style={{ fontSize: 12, color: 'var(--text-light)' }}>{clients.length} client{clients.length === 1 ? '' : 's'} · amounts in AED</div>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ position: 'relative', width: 240 }}>
+            <input className="search-input" value={q} onChange={e => setQ(e.target.value)} placeholder="Search clients…" />
+            <div className="search-icon"><Icon name="search" size={14} /></div>
+          </div>
+          <Btn onClick={() => { setNewC(EMPTY_CLIENT); setEditingName(null); setShowAdd(!showAdd); }}>+ Add Client</Btn>
+        </div>
       </div>
 
       {showAdd && (
         <div className="card" style={{ padding: 24, marginBottom: 24, border: '1.5px solid var(--primary)' }}>
-          <h3 className="section-title">New Client Details</h3>
+          <h3 className="section-title">{editingName ? `Edit · ${editingName}` : 'New Client Details'}</h3>
           <div className="form-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
-            <Input label="Client Name *" value={newC.clientName} onChange={(e) => setNewC({ ...newC, clientName: e.target.value })} placeholder="John Doe" />
+            <Input label="Client Name *" value={newC.clientName} disabled={!!editingName} title={editingName ? 'Client name links invoices and cannot be changed here' : undefined} onChange={(e) => setNewC({ ...newC, clientName: e.target.value })} placeholder="John Doe" />
             <Input label="Business Name *" value={newC.businessName} onChange={(e) => setNewC({ ...newC, businessName: e.target.value })} placeholder="Company name" />
             <Input label="Designation" value={newC.clientDesignation} onChange={(e) => setNewC({ ...newC, clientDesignation: e.target.value })} placeholder="e.g. CEO, Director" />
             <Input label="Email" value={newC.clientEmail} onChange={(e) => setNewC({ ...newC, clientEmail: e.target.value })} placeholder="client@email.com" type="email" />
             <Input label="Phone" value={newC.clientPhone} onChange={(e) => setNewC({ ...newC, clientPhone: e.target.value })} placeholder="+971..." />
             <Input label="Address" value={newC.clientAddress} onChange={(e) => setNewC({ ...newC, clientAddress: e.target.value })} placeholder="Business address" />
+            <Input label="Default Payment Link" value={newC.paymentLink} onChange={(e) => setNewC({ ...newC, paymentLink: e.target.value })} placeholder="https://…" />
           </div>
           <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 16 }}>
-            <Btn variant="ghost" onClick={() => setShowAdd(false)}>Cancel</Btn>
-            <Btn onClick={handleAdd}>Save Client</Btn>
+            <Btn variant="ghost" onClick={() => { setShowAdd(false); setEditingName(null); }}>Cancel</Btn>
+            <Btn onClick={handleAdd}>{editingName ? 'Save Changes' : 'Save Client'}</Btn>
           </div>
         </div>
       )}
@@ -118,7 +158,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
-          {clients.map((c) => {
+          {clients.filter(c => !q || [c.name, c.businessName, c.email].some(v => (v || '').toLowerCase().includes(q.toLowerCase()))).map((c) => {
             const st = stats(c);
             const isDragTarget = dragOverName === c.name && dragName !== c.name;
             return (
@@ -150,30 +190,35 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
                       </div>
                     </div>
                   </div>
-                  <Btn variant="danger" size="sm" onClick={() => onDelete(c.name)}>
-                    <Icon name="trash" size={12} />
-                  </Btn>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Btn variant="ghost" size="sm" onClick={() => startEdit(c)} title="Edit client"><Icon name="edit" size={12} /></Btn>
+                    <Btn variant="danger" size="sm" onClick={() => onDelete(c.name)} title="Delete client"><Icon name="trash" size={12} /></Btn>
+                  </div>
                 </div>
+                {st.overdue > 0 && (
+                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--danger)', marginBottom: 6 }}>⚠ {st.overdue} overdue invoice{st.overdue === 1 ? '' : 's'}</div>
+                )}
                 {c.email && <div style={{ fontSize: 12, color: 'var(--text-light)', marginBottom: 2 }}>{c.email}</div>}
                 {c.phone && <div style={{ fontSize: 12, color: 'var(--text-light)', marginBottom: 8 }}>{c.phone}</div>}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 12, paddingTop: 10, borderTop: '1px solid var(--border-light)' }}>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase' }}>Total</div>
-                    <div style={{ fontWeight: 700 }}>AED {st.total.toLocaleString()}</div>
+                    <div style={{ fontWeight: 700 }}>AED {Math.round(st.total).toLocaleString()}</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase' }}>Invoiced</div>
-                    <div style={{ fontWeight: 700, color: 'var(--text-mid)' }}>AED {st.invoiced.toLocaleString()}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--text-mid)' }}>AED {Math.round(st.invoiced).toLocaleString()}</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase' }}>Received</div>
-                    <div style={{ fontWeight: 700, color: 'var(--success)' }}>AED {st.received.toLocaleString()}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--success)' }}>AED {Math.round(st.received).toLocaleString()}</div>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase' }}>Pending</div>
-                    <div style={{ fontWeight: 700, color: 'var(--info)' }}>AED {st.pending.toLocaleString()}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--info)' }}>AED {Math.round(st.pending).toLocaleString()}</div>
                   </div>
                 </div>
+                <div className="meter" style={{ marginBottom: 12 }} title={`${st.progress.toFixed(0)}% collected`}><div style={{ width: `${st.progress}%`, background: 'var(--success)' }} /></div>
                 <div style={{ display: 'flex', gap: 8 }}>
                   <Btn variant="secondary" size="sm" onClick={() => setViewProjClient(c.name)} style={{ flex: 1 }}>
                     <Icon name="folder" size={12} /> View Projects
@@ -190,7 +235,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 
       {/* Projects Modal */}
       {viewProjClient && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) setViewProjClient(null); }}>
           <div className="card animate-fade-in" style={{ width: '100%', maxWidth: 800, maxHeight: '90vh', overflowY: 'auto', padding: 24 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h2 style={{ fontSize: 20, fontWeight: 700 }}>Projects · {viewProjClient}</h2>
@@ -207,7 +252,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 
             {showAddProj && (
               <div style={{ background: 'var(--bg)', padding: 16, borderRadius: 8, marginBottom: 20, border: '1px solid var(--border)' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+                <div className="form-grid-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
                   <Input label="Project Name *" value={newProj.name} onChange={(e) => setNewProj({ ...newProj, name: e.target.value })} placeholder="e.g. Admin Panel" />
                   <div className="form-group">
                     <label className="form-label">Type</label>
@@ -230,7 +275,8 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
               </div>
             )}
 
-            <table className="inv-table" style={{ marginTop: 10 }}>
+            <div style={{ overflowX: 'auto' }}>
+            <table className="inv-table" style={{ marginTop: 10, minWidth: 640 }}>
               <thead>
                 <tr style={{ borderBottom: '1px solid var(--border)' }}>
                   <th>Name</th>
@@ -250,7 +296,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 
                   return projects.map((p) => {
                     const pInvs = invoices.filter(i => i.clientName === viewProjClient && i.projectName === p.name);
-                    const pPaid = pInvs.filter(i => i.status !== 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
+                    const pPaid = pInvs.reduce((s, i) => s + toAED(invoiceReceived(i), i.currency), 0);
                     const pPending = pInvs.filter(i => i.status === 'pending').reduce((s, i) => s + (Number(i.payingNow) || 0), 0);
                     return (
                       <tr key={p.id} style={{ borderBottom: '1px solid var(--border-light)' }}>
@@ -261,13 +307,18 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
                         <td style={{ color: 'var(--info)' }}>AED {pPending.toLocaleString()}</td>
                         <td style={{ fontSize: 12, color: 'var(--text-light)', maxWidth: 200, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={p.details}>{p.details || '-'}</td>
                         <td style={{ textAlign: 'right' }}>
-                          <Btn variant="ghost" size="sm" onClick={() => {
-                            setNewProj({ name: p.name, type: p.type, total: p.total, details: p.details });
-                            setEditProjId(p.id);
-                            setShowAddProj(true);
-                          }}>
-                            <Icon name="edit" size={12} />
-                          </Btn>
+                          <div style={{ display: 'inline-flex', gap: 6 }}>
+                            <Btn variant="ghost" size="sm" title="Edit project" onClick={() => {
+                              setNewProj({ name: p.name, type: p.type, total: p.total, details: p.details });
+                              setEditProjId(p.id);
+                              setShowAddProj(true);
+                            }}>
+                              <Icon name="edit" size={12} />
+                            </Btn>
+                            <Btn variant="danger" size="sm" title="Delete project" onClick={() => handleDeleteProj(p.id)}>
+                              <Icon name="trash" size={12} />
+                            </Btn>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -275,6 +326,7 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
                 })()}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
@@ -283,134 +335,152 @@ export function ClientsView({ clients, invoices, onDelete, onLedger, onAddClient
 }
 
 /* ═══ REPORTS VIEW ═══ */
-export function ReportsView({ invoices = [], clients = [], salaries = [], bills = [] }) {
-  const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
+const receivedMonth = (inv) => (inv.paidAt ? String(inv.paidAt).slice(0, 7) : (inv.date || '').slice(0, 7));
 
-  // Extract all available months from invoices and salaries
-  const allMonths = new Set();
+function Metric({ label, value, color, hint }) {
+  return (
+    <div className="metric-card">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value" style={{ color }}>{fmtAED(value)}</div>
+      {hint && <div className="metric-hint">{hint}</div>}
+    </div>
+  );
+}
+
+export function ReportsView({ invoices = [], clients = [], salaries = [], bills = [], billPayments = {} }) {
+  const [selectedMonth, setSelectedMonth] = useState(currentYM());
+
+  // Extract all available months from invoices, payments and salaries
+  const allMonths = new Set([currentYM()]);
   invoices.forEach(inv => {
     if (inv.date) allMonths.add(inv.date.substring(0, 7));
+    if (inv.paidAt) allMonths.add(receivedMonth(inv));
   });
   salaries.forEach(sal => {
     if (sal.month) allMonths.add(sal.month.substring(0, 7));
   });
+  Object.keys(billPayments).forEach(m => allMonths.add(m));
   const availableMonths = Array.from(allMonths).sort().reverse();
-  if (!availableMonths.includes(selectedMonth)) {
-    availableMonths.unshift(selectedMonth);
-  }
 
-  // Filter Data
-  const monthInvoices = invoices.filter(inv => inv.date && inv.date.substring(0, 7) === selectedMonth);
+  // Accrual view: invoices issued this month. Cash view: money received this month.
+  const monthInvoices = invoices.filter(inv => inv.date && inv.date.substring(0, 7) === selectedMonth && inv.status !== 'scheduled');
+  const receivedInvoices = invoices.filter(inv => invoiceReceived(inv) > 0 && receivedMonth(inv) === selectedMonth);
   const monthSalaries = salaries.filter(sal => sal.month && sal.month.substring(0, 7) === selectedMonth);
 
-  // Calculate Metrics
-  const totalInvoiced = monthInvoices.reduce((sum, inv) => sum + (Number(inv.totalPayment) || 0), 0);
-  const totalReceived = monthInvoices.filter(inv => inv.status !== 'pending' && inv.status !== 'unpaid')
-    .reduce((sum, inv) => sum + (inv.status === 'paid' ? (Number(inv.totalPayment) || 0) : (Number(inv.payingNow) || 0)), 0);
-  const totalPending = Math.max(0, totalInvoiced - totalReceived);
+  const totalInvoiced = monthInvoices.reduce((sum, inv) => sum + toAED(inv.totalPayment, inv.currency), 0);
+  const totalReceived = receivedInvoices.reduce((sum, inv) => sum + toAED(invoiceReceived(inv), inv.currency), 0);
+  const totalPending = monthInvoices.reduce((sum, inv) => sum + toAED(invoiceOutstanding(inv), inv.currency), 0);
 
   const totalSalaries = monthSalaries.reduce((sum, sal) => sum + (Number(sal.totalSalary) || 0), 0);
+  const salariesPaid = monthSalaries.reduce((sum, sal) => sum + (Number(sal.paidAmount) || 0), 0);
 
-  // Bills for this month: monthly bills always apply, one-time bills only if their month matches
-  const monthBills = bills.filter(b => b.type === 'monthly' || (b.type === 'one-time' && b.month && b.month.substring(0, 7) === selectedMonth));
-  const totalBills = monthBills.reduce((sum, b) => sum + (Number(b.amount) || 0), 0);
+  const billSum = billsSummary(bills, billPayments, selectedMonth);
+  const monthBills = billSum.list;
+  const totalBills = billSum.total;
 
   const expectedProfit = totalInvoiced - totalSalaries - totalBills;
-  const netSavings = totalReceived - totalSalaries - totalBills;
+  const netSavings = totalReceived - salariesPaid - billSum.paid;
+
+  const exportCSV = () => {
+    const rows = [
+      [`Devmate Finance Report: ${fmtMonth(selectedMonth)}`], [],
+      ['Summary', 'AED'],
+      ['Invoiced', totalInvoiced.toFixed(2)], ['Received (cash)', totalReceived.toFixed(2)], ['Outstanding from this month', totalPending.toFixed(2)],
+      ['Salaries allocated', totalSalaries.toFixed(2)], ['Salaries paid', salariesPaid.toFixed(2)],
+      ['Bills', totalBills.toFixed(2)], ['Bills paid', billSum.paid.toFixed(2)],
+      ['Expected profit', expectedProfit.toFixed(2)], ['Net cash', netSavings.toFixed(2)], [],
+      ['Invoices issued', 'Client', 'Status', 'Currency', 'Total', 'Total (AED)'],
+      ...monthInvoices.map(i => [`#${i.invoiceNumber}`, i.clientName, i.status || 'unpaid', i.currency, i.totalPayment, toAED(i.totalPayment, i.currency).toFixed(2)]),
+      [], ['Salaries', 'Project', 'Type', 'Total', 'Paid', 'Status'],
+      ...monthSalaries.map(s => [s.employeeName, s.projectName || '', s.salaryType || 'project', s.totalSalary, s.paidAmount || 0, s.status || 'unpaid']),
+      [], ['Bills', 'Category', 'Type', 'Amount', 'Paid'],
+      ...monthBills.map(b => [b.name, b.category || 'Other', b.type, b.amount, (billPayments[selectedMonth] || {})[b.id] || 0]),
+    ];
+    downloadCSV(`devmate-report-${selectedMonth}.csv`, rows);
+  };
 
   return (
     <div className="animate-fade-in">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Monthly Reports</h1>
+      <div className="page-head">
         <div>
+          <h1 className="page-title">Monthly Reports</h1>
+          <p className="page-sub">All currencies converted to AED · received = cash in during the month</p>
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <select
             value={selectedMonth}
             onChange={(e) => setSelectedMonth(e.target.value)}
             className="form-select"
-            style={{ width: 200, padding: '10px 14px', fontWeight: 600, fontSize: 14 }}
+            style={{ width: 180, fontWeight: 600 }}
           >
             {availableMonths.map(m => (
-              <option key={m} value={m}>{m}</option>
+              <option key={m} value={m}>{fmtMonth(m)}{m === currentYM() ? ' (Current)' : ''}</option>
             ))}
           </select>
+          <Btn variant="ghost" onClick={exportCSV}><Icon name="download" size={14} /> Export</Btn>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 24 }}>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Invoiced</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--primary)' }}>AED {totalInvoiced.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+      <div className="metric-grid">
+        <Metric label="Invoiced" value={totalInvoiced} color="var(--text)" hint={`${monthInvoices.length} invoice${monthInvoices.length === 1 ? '' : 's'} issued`} />
+        <Metric label="Received" value={totalReceived} color="var(--success)" hint={`${receivedInvoices.length} payment${receivedInvoices.length === 1 ? '' : 's'}`} />
+        <Metric label="Still outstanding" value={totalPending} color="var(--warning)" hint="from invoices issued this month" />
+        <Metric label="Salaries" value={totalSalaries} color="var(--primary)" hint={`${fmtAED(salariesPaid, 0)} paid`} />
+        <Metric label="Bills" value={totalBills} color="var(--text-mid)" hint={`${fmtAED(billSum.paid, 0)} paid`} />
+      </div>
+
+      <div className="report-hero-grid">
+        <div className="report-hero">
+          <div className="report-hero-label">Expected profit</div>
+          <div className="report-hero-formula">Invoiced − salaries − bills</div>
+          <div className="report-hero-value" style={{ color: expectedProfit >= 0 ? '#34d399' : '#f87171' }}>{fmtAED(expectedProfit)}</div>
         </div>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Received</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--success)' }}>AED {totalReceived.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Pending</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--warning)' }}>AED {totalPending.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Total Salaries</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#DC143C' }}>AED {totalSalaries.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px' }}>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Regular Bills</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: '#f97316' }}>AED {totalBills.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div className="report-hero">
+          <div className="report-hero-label">Net cash</div>
+          <div className="report-hero-formula">Received − salaries paid − bills paid</div>
+          <div className="report-hero-value" style={{ color: netSavings >= 0 ? '#34d399' : '#f87171' }}>{fmtAED(netSavings)}</div>
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14, marginBottom: 32 }}>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
-          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Expected Profit (Invoiced − Salaries − Bills)</div>
-          <div style={{ fontSize: 32, fontWeight: 700, color: expectedProfit >= 0 ? '#10b981' : '#ef4444' }}>
-            AED {expectedProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-          </div>
-        </div>
-        <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '20px', background: 'linear-gradient(145deg, #1e1e1e, #111)' }}>
-          <div style={{ fontSize: 11, color: '#999', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>Net Profit / Savings (Received − Salaries − Bills)</div>
-          <div style={{ fontSize: 32, fontWeight: 700, color: netSavings >= 0 ? '#10b981' : '#ef4444' }}>
-            AED {netSavings.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+      <div className="reports-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
         <div className="card" style={{ padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h3 className="section-title" style={{ margin: 0 }}>Invoices ({monthInvoices.length})</h3>
-          </div>
+          <h3 className="section-title">Invoices issued ({monthInvoices.length})</h3>
           {monthInvoices.length === 0 ? (
             <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No invoices generated this month</div>
           ) : (
-            monthInvoices.map((inv) => (
-              <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border-light)' }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{inv.clientName}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>
-                    <span style={{ color: inv.status === 'paid' ? 'var(--success)' : inv.status === 'partial' ? 'var(--warning)' : 'var(--danger)', fontWeight: 700, marginRight: 6 }}>{inv.status.toUpperCase()}</span>
-                    Inv #{inv.invoiceNumber}
+            monthInvoices.map((inv) => {
+              const st = inv.status || 'unpaid';
+              return (
+                <div key={inv.invoiceNumber} className="report-row">
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>{inv.clientName}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>
+                      <span style={{ color: st === 'paid' ? 'var(--success)' : st === 'partial' ? 'var(--warning)' : st === 'pending' ? 'var(--info)' : 'var(--danger)', fontWeight: 700, marginRight: 6 }}>{st.toUpperCase()}</span>
+                      Inv #{inv.invoiceNumber}{inv.currency !== 'AED' ? ` · ${inv.currency}` : ''}
+                    </div>
                   </div>
+                  <div className="num" style={{ fontWeight: 700, fontSize: 14 }}>{fmtAED(toAED(inv.totalPayment, inv.currency), 0)}</div>
                 </div>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>AED {(Number(inv.totalPayment) || 0).toLocaleString()}</div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
 
         <div className="card" style={{ padding: 24 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h3 className="section-title" style={{ margin: 0 }}>Salaries Allocated ({monthSalaries.length})</h3>
-          </div>
+          <h3 className="section-title">Salaries allocated ({monthSalaries.length})</h3>
           {monthSalaries.length === 0 ? (
             <div style={{ color: 'var(--text-light)', fontSize: 13 }}>No salaries allocated this month</div>
           ) : (
             monthSalaries.map((sal) => (
-              <div key={sal.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid var(--border-light)' }}>
+              <div key={sal.id} className="report-row">
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{sal.employeeName}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4 }}>{sal.projectName || 'N/A'} • {sal.salaryType === 'monthly' ? '🔄 Monthly' : '📦 One-Time'}</div>
                 </div>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>AED {(Number(sal.totalSalary) || 0).toLocaleString()}</div>
+                <div style={{ textAlign: 'right' }}>
+                  <div className="num" style={{ fontWeight: 700, fontSize: 14 }}>{fmtAED(sal.totalSalary, 0)}</div>
+                  {Number(sal.paidAmount) > 0 && <div style={{ fontSize: 11, color: 'var(--success)' }}>paid {fmtAED(sal.paidAmount, 0)}</div>}
+                </div>
               </div>
             ))
           )}
@@ -421,20 +491,26 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
       {monthBills.length > 0 && (
         <div className="card" style={{ padding: 24, marginTop: 18 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <h3 className="section-title" style={{ margin: 0 }}>🧾 Regular Bills ({monthBills.length})</h3>
-            <div style={{ fontWeight: 700, color: '#f97316', fontSize: 14 }}>−AED {totalBills.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+            <h3 className="section-title" style={{ margin: 0 }}>🧾 Bills ({monthBills.length})</h3>
+            <div className="num" style={{ fontWeight: 700, fontSize: 14 }}>{fmtAED(billSum.paid, 0)} of {fmtAED(totalBills, 0)} paid</div>
           </div>
-          {monthBills.map((bill) => (
-            <div key={bill.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid var(--border-light)' }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600 }}>{bill.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 3 }}>
-                  {bill.category || 'Other'} · {bill.type === 'monthly' ? '🔄 Monthly' : `📌 One-Time (${bill.month})`}
+          {monthBills.map((bill) => {
+            const paid = Number((billPayments[selectedMonth] || {})[bill.id]) || 0;
+            return (
+              <div key={bill.id} className="report-row">
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{bill.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 3 }}>
+                    {bill.category || 'Other'} · {bill.type === 'one-time' ? `📌 One-Time (${bill.month})` : '🔄 Recurring'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div className="num" style={{ fontWeight: 700, fontSize: 14 }}>{fmtAED(bill.amount, 0)}</div>
+                  <div style={{ fontSize: 11, color: paid >= Number(bill.amount) ? 'var(--success)' : 'var(--text-light)' }}>{paid >= Number(bill.amount) ? 'paid' : paid > 0 ? `paid ${fmtAED(paid, 0)}` : 'unpaid'}</div>
                 </div>
               </div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: '#f97316' }}>AED {(Number(bill.amount) || 0).toLocaleString()}</div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

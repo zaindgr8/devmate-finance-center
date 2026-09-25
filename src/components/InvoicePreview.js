@@ -1,9 +1,23 @@
 import React from 'react';
 import Icon from './Icon';
 import { Badge, Btn } from './UI';
-import { fmtDate, fmtCurrency, generatePrintHTML } from '../utils/helpers';
+import { fmtDate, fmtCurrency, generatePrintHTML, invoiceReceived, invoiceOutstanding, isInvoiceOverdue, statusColor, buildReminderText } from '../utils/helpers';
 
-export default function InvoicePreview({ inv, salaries = [], onBack }) {
+export default function InvoicePreview({ inv, salaries = [], onBack, onEdit, onNotify }) {
+  const received = invoiceReceived(inv);
+  const balance = inv.status === 'paid' ? 0 : Math.max(0, (Number(inv.totalPayment) || 0) - received);
+  const overdue = isInvoiceOverdue(inv);
+
+  const copyReminder = async () => {
+    const text = buildReminderText(inv);
+    try {
+      await navigator.clipboard.writeText(text);
+      onNotify && onNotify('Reminder copied to clipboard');
+    } catch {
+      window.prompt('Copy this reminder:', text);
+    }
+  };
+
   const handleDownloadPDF = () => {
     // Load html2pdf.js from CDN if not already loaded
     const load = () => new Promise((resolve) => {
@@ -11,6 +25,7 @@ export default function InvoicePreview({ inv, salaries = [], onBack }) {
       const s = document.createElement('script');
       s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
       s.onload = resolve;
+      s.onerror = () => { onNotify && onNotify('Could not load the PDF library. Check your connection.', 'error'); };
       document.head.appendChild(s);
     });
 
@@ -39,18 +54,22 @@ export default function InvoicePreview({ inv, salaries = [], onBack }) {
             <Icon name="back" />
           </button>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Invoice #{inv.invoiceNumber}</h1>
-          <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : 'red'}>
-            {inv.status || 'unpaid'}
+          <Badge color={overdue ? 'red' : statusColor(inv.status)}>
+            {overdue ? 'overdue' : (inv.status || 'unpaid')}
           </Badge>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {invoiceOutstanding(inv) > 0 && (
+            <Btn variant="ghost" onClick={copyReminder}><Icon name="bell" size={14} /> Copy reminder</Btn>
+          )}
+          {onEdit && <Btn variant="ghost" onClick={() => onEdit(inv)}><Icon name="edit" size={14} /> Edit</Btn>}
           <Btn onClick={handleDownloadPDF}>
             <Icon name="file-text" size={14} /> Download PDF
           </Btn>
         </div>
       </div>
 
-      <div style={{ overflow: 'hidden', maxWidth: 800 }}>
+      <div className="card" style={{ overflow: 'hidden', maxWidth: 800 }}>
         {/* Header */}
         <div className="invoice-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -67,7 +86,7 @@ export default function InvoicePreview({ inv, salaries = [], onBack }) {
 
         <div className="invoice-body">
           {/* Meta */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, marginBottom: 28 }}>
+          <div className="form-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 28, marginBottom: 28 }}>
             <div>
               <div className="section-title" style={{ marginBottom: 8 }}>Bill To</div>
               <div style={{ fontWeight: 600, fontSize: 15 }}>{inv.clientName}</div>
@@ -117,14 +136,14 @@ export default function InvoicePreview({ inv, salaries = [], onBack }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 13, color: 'var(--text-mid)', borderBottom: '1px solid var(--border-light)' }}>
                 <span>Subtotal</span><span>{fmtCurrency(inv.totalPayment, inv.currency)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 13, color: 'var(--success)', borderBottom: '1px solid var(--border-light)' }}>
-                <span>Paid</span><span>- {fmtCurrency(inv.payingNow, inv.currency)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 13, color: 'var(--warning)', fontWeight: 600, borderBottom: '1px solid var(--border-light)' }}>
-                <span>Balance Due</span><span>{fmtCurrency(inv.remaining, inv.currency)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 0', fontSize: 17, color: 'var(--primary)', fontWeight: 700, borderTop: '2px solid var(--primary)', marginTop: 4 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0 8px', fontSize: 17, color: 'var(--primary)', fontWeight: 700, borderTop: '2px solid var(--primary)', marginTop: 4 }}>
                 <span>Total</span><span>{fmtCurrency(inv.totalPayment, inv.currency)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 13, color: 'var(--success)', borderBottom: '1px solid var(--border-light)' }}>
+                <span>Paid</span><span>- {fmtCurrency(received, inv.currency)}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', fontSize: 13, color: balance > 0 ? 'var(--warning)' : 'var(--success)', fontWeight: 600 }}>
+                <span>Balance Due</span><span>{fmtCurrency(balance, inv.currency)}</span>
               </div>
             </div>
           </div>

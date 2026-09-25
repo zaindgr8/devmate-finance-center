@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import Icon from './Icon';
 import { Btn, Input, TextArea, Select } from './UI';
-import { today, fmtCurrency, CURRENCIES } from '../utils/helpers';
+import { today, fmtCurrency, CURRENCIES, nowLocalDateTime } from '../utils/helpers';
 
-export default function InvoiceForm({ clients, finance, editInv, onSave, onCancel }) {
+export default function InvoiceForm({ clients, finance, employees = [], editInv, draftInv, onSave, onCancel }) {
   const [clientSearch, setClientSearch] = useState('');
   const [showSug, setShowSug] = useState(false);
   const empty = { description: '', qty: 1, rate: 0 };
@@ -13,25 +13,28 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
     dueDate: '', currency: 'AED', items: [{ ...empty }], payingNow: 0,
     specialNotes: '', status: 'pending', projectName: '',
   };
-  const [form, setForm] = useState(editInv ? { ...dflt, ...editInv } : dflt);
+  const seed = editInv || draftInv;
+  const [form, setForm] = useState(seed ? { ...dflt, ...seed } : dflt);
   const [paymentConfirmed, setPaymentConfirmed] = useState(editInv && editInv.status !== 'pending' && editInv.status !== 'scheduled');
   const [isScheduled, setIsScheduled] = useState(editInv?.status === 'scheduled');
   const [scheduledDate, setScheduledDate] = useState(editInv?.scheduledDate || '');
 
   // ── Finance state ──────────────────────────────────────────────
-  const finDflt = editInv?.financeData || { paymentType: 'project', salaries: [], allahShare: 0, saving: 0, _allahManual: false };
+  const finDflt = { paymentType: 'project', salaries: [], allahShare: 0, saving: 0, _allahManual: false, ...(seed?.financeData || {}) };
   const [finData, setFinData] = useState(finDflt);
   const [showEmpSug, setShowEmpSug] = useState(null); // index of active salary row
 
-  // collect past employee names from finance records
+  // Employee suggestions: active employees first, plus names used on past invoices
   const pastEmployees = useMemo(() => {
-    const records = finance || [];
     const map = {};
-    records.forEach((r) => (r.salaries || []).forEach((e) => {
+    (finance || []).forEach((r) => (r.salaries || []).forEach((e) => {
       if (e.employee) map[e.employee] = e.amount;
     }));
+    employees
+      .filter((e) => e.name && (e.status === 'active' || !e.status))
+      .forEach((e) => { if (!(e.name in map)) map[e.name] = Number(e.baseSalary) || 0; });
     return Object.entries(map).map(([employee, amount]) => ({ employee, amount }));
-  }, []);
+  }, [finance, employees]);
 
   const setFin = (k, v) => setFinData((f) => ({ ...f, [k]: v }));
 
@@ -63,6 +66,14 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
   const submit = () => {
     if (!form.clientName || !form.businessName || form.items.length === 0) {
       alert('Please fill client name, business name, and at least one item.');
+      return;
+    }
+    if (total <= 0) {
+      alert('Invoice total must be greater than zero. Check line item quantities and rates.');
+      return;
+    }
+    if ((Number(form.payingNow) || 0) > total) {
+      alert(`Paying amount (${fmtCurrency(form.payingNow, form.currency)}) is more than the invoice total (${fmtCurrency(total, form.currency)}).`);
       return;
     }
     // Scheduled invoice
@@ -97,7 +108,7 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
           <Icon name="back" />
         </button>
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>
-          {editInv ? `Edit #${editInv.invoiceNumber}` : 'Create Invoice'}
+          {editInv ? `Edit #${editInv.invoiceNumber}` : draftInv ? 'Duplicate Invoice' : 'Create Invoice'}
         </h1>
       </div>
 
@@ -199,7 +210,7 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
                     set('date', val.split('T')[0]);
                   }
                 }}
-                min={new Date().toISOString().slice(0, 16)}
+                min={nowLocalDateTime()}
               />
               <div style={{ marginTop: 8, fontSize: 12, color: '#7c3aed', background: 'rgba(124,58,237,0.08)', borderRadius: 6, padding: '6px 12px' }}>
                 📅 This invoice will automatically switch to <strong>Pending Confirmation</strong> status at the scheduled time when the app is opened.
@@ -263,12 +274,17 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
             ℹ️ Invoice will be created as <strong>Pending Confirmation</strong>. Go to Invoices to confirm once payment is received.
           </div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
+        <div className="form-grid-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
           <div>
             <div className="form-label">Total Invoice Amount</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--primary)' }}>{fmtCurrency(total, form.currency)}</div>
           </div>
-          <Input label="Invoice Amount (Paying)" type="number" value={form.payingNow} onChange={(e) => set('payingNow', e.target.value)} min="0" max={total} />
+          <div>
+            <Input label="Invoice Amount (Paying)" type="number" value={form.payingNow} onChange={(e) => set('payingNow', e.target.value)} min="0" max={total} style={Number(form.payingNow) > total ? { borderColor: 'var(--danger)' } : undefined} />
+            {total > 0 && Number(form.payingNow) !== total && (
+              <button type="button" className="link-btn" style={{ marginTop: -8 }} onClick={() => set('payingNow', total)}>Use full amount</button>
+            )}
+          </div>
           <div>
             <div className="form-label">Remaining</div>
             <div style={{ fontSize: 22, fontWeight: 700, color: rem > 0 ? 'var(--warning)' : 'var(--success)' }}>
@@ -365,7 +381,7 @@ export default function InvoiceForm({ clients, finance, editInv, onSave, onCance
                           style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 14px', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontFamily: 'Poppins,sans-serif', borderBottom: '1px solid var(--border-light)' }}
                         >
                           <span style={{ fontWeight: 600 }}>{e.employee}</span>
-                          <span style={{ color: 'var(--text-light)', marginLeft: 8, fontSize: 12 }}>Last: AED {Number(e.amount).toLocaleString()}</span>
+                          {Number(e.amount) > 0 && <span style={{ color: 'var(--text-light)', marginLeft: 8, fontSize: 12 }}>Last: AED {Number(e.amount).toLocaleString()}</span>}
                         </button>
                       ))}
                     </div>

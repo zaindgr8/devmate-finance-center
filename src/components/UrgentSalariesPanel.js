@@ -37,7 +37,7 @@ export default function UrgentSalariesPanel({
   // Picker: non-urgent, non-paid salaries
   const pickerItems = salaries.filter(s =>
     !urgentSalaryIds.includes(s.id) &&
-    s.status !== 'paid' &&
+    s.status !== 'paid' && s.status !== 'pushed' &&
     (!pickerQ ||
       s.employeeName?.toLowerCase().includes(pickerQ.toLowerCase()) ||
       s.projectName?.toLowerCase().includes(pickerQ.toLowerCase()))
@@ -139,7 +139,7 @@ export default function UrgentSalariesPanel({
             <div style={{ maxHeight: 180, overflowY: 'auto' }}>
               {pickerItems.length === 0 ? (
                 <div style={{ padding: '14px', textAlign: 'center', fontSize: 11, color: 'var(--text-faint)' }}>
-                  {salaries.filter(s => s.status !== 'paid').length === 0 ? '✅ All salaries paid!' : 'No matching results'}
+                  {salaries.filter(s => s.status !== 'paid' && s.status !== 'pushed').length === 0 ? '✅ All salaries paid!' : 'No matching results'}
                 </div>
               ) : pickerItems.map(s => {
                 const rem = Math.max(0, (Number(s.totalSalary) || 0) - (Number(s.paidAmount) || 0));
@@ -266,12 +266,13 @@ export default function UrgentSalariesPanel({
                           
                           const newPaid = paid + amt;
                           const newStatus = newPaid >= total ? 'paid' : 'partial';
+                          // Only fully-settled salaries leave the urgent list
                           
                           if (onUpdateSalary) {
                             onUpdateSalary(s.id, { paidAmount: newPaid, status: newStatus });
                           }
-                          onRemove(s.id);
-                          
+                          if (newStatus === 'paid') onRemove(s.id);
+
                           // clean state
                           const copy = { ...urgentAmounts };
                           delete copy[s.id];

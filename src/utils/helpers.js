@@ -1,15 +1,125 @@
 /* ── Date helpers ── */
+// All "calendar" dates use the local timezone. toISOString() is UTC, which in
+// Dubai/Muscat (UTC+4) returns yesterday's date between 00:00 and 04:00.
+export function localDateStr(d = new Date()) {
+  const dt = d instanceof Date ? d : new Date(d);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+
 export function today() {
-  return new Date().toISOString().split('T')[0];
+  return localDateStr();
+}
+
+export function firstOfMonthStr() {
+  const d = new Date();
+  return localDateStr(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+// Local datetime string for <input type="datetime-local"> min values
+export function nowLocalDateTime() {
+  const d = new Date();
+  return `${localDateStr(d)}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 export function fmtDate(d) {
   if (!d) return '';
-  return new Date(d).toLocaleDateString('en-US', {
+  // Plain YYYY-MM-DD strings are parsed as UTC midnight by Date(); parse them as local instead
+  const dt = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T00:00:00`) : new Date(d);
+  return dt.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
   });
+}
+
+export function fmtMonth(ym) {
+  if (!ym) return '';
+  const [y, m] = ym.split('-');
+  return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+}
+
+export function daysBetween(fromDateStr, toDateStr) {
+  const a = new Date(`${fromDateStr}T00:00:00`);
+  const b = new Date(`${toDateStr}T00:00:00`);
+  return Math.round((b - a) / 86400000);
+}
+
+/* ── Amount helpers ── */
+// Approximate AED conversion used for cross-currency totals.
+// USD and OMR are pegged; GBP/EUR float, so update these occasionally.
+export const AED_RATES = { AED: 1, USD: 3.6725, OMR: 9.5475, GBP: 4.9, EUR: 4.25 };
+
+export function toAED(amount, currency = 'AED') {
+  return (Number(amount) || 0) * (AED_RATES[currency] || 1);
+}
+
+export function fmtAED(n, digits = 2) {
+  return `AED ${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+// Amount actually received on an invoice (pending/scheduled invoices haven't been received yet)
+export function invoiceReceived(inv) {
+  if (!inv || inv.status === 'pending' || inv.status === 'scheduled') return 0;
+  if (inv.status === 'paid') return Number(inv.totalPayment) || Number(inv.payingNow) || 0;
+  return Number(inv.payingNow) || 0;
+}
+
+export function invoiceOutstanding(inv) {
+  if (!inv || inv.status === 'paid' || inv.status === 'scheduled') return 0;
+  return Math.max(0, (Number(inv.totalPayment) || 0) - invoiceReceived(inv));
+}
+
+export function isInvoiceOverdue(inv, todayStr = today()) {
+  return !!inv && !!inv.dueDate && inv.status !== 'paid' && inv.status !== 'scheduled' && inv.dueDate < todayStr;
+}
+
+export function statusColor(status) {
+  return status === 'paid' ? 'green' : status === 'partial' ? 'yellow' : status === 'pending' || status === 'scheduled' ? 'blue' : 'red';
+}
+
+/* ── HTML escaping for generated documents ── */
+export function escapeHTML(v) {
+  return String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeUrl(u) {
+  return /^https?:\/\//i.test(String(u || '').trim()) ? escapeHTML(u.trim()) : '';
+}
+
+/* ── CSV export ── */
+export function downloadCSV(filename, rows) {
+  const esc = (v) => {
+    const s = String(v ?? '');
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = rows.map((r) => r.map(esc).join(',')).join('\n');
+  const blob = new Blob([`﻿${csv}`], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ── Payment reminder text ── */
+export function buildReminderText(inv) {
+  const due = invoiceOutstanding(inv) || Number(inv.totalPayment) || 0;
+  const lines = [
+    `Dear ${inv.clientName || 'Client'},`,
+    '',
+    `This is a friendly reminder that invoice #${inv.invoiceNumber}${inv.projectName ? ` (${inv.projectName})` : ''} for ${fmtCurrency(due, inv.currency)} is ${isInvoiceOverdue(inv) ? `overdue since ${fmtDate(inv.dueDate)}` : inv.dueDate ? `due on ${fmtDate(inv.dueDate)}` : 'awaiting payment'}.`,
+  ];
+  if (inv.paymentLink) lines.push('', `You can pay securely here: ${inv.paymentLink}`);
+  lines.push('', 'Thank you for your trust!', 'Devmate Solutions');
+  return lines.join('\n');
 }
 
 /* ── Currency formatter ── */
@@ -39,15 +149,17 @@ export function generatePrintHTML(inv, logoBase64) {
     .map(
       (it, i) => `<tr>
     <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#8892A7;font-size:13px;">${i + 1}</td>
-    <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#1A1D26;font-size:13px;">${it.description}</td>
-    <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#4A5068;text-align:center;font-size:13px;">${it.qty}</td>
+    <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#1A1D26;font-size:13px;">${escapeHTML(it.description)}</td>
+    <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#4A5068;text-align:center;font-size:13px;">${escapeHTML(it.qty)}</td>
     <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#1A1D26;text-align:right;font-size:13px;">${fmtCurrency(it.rate, inv.currency)}</td>
     <td style="padding:11px 14px;border-bottom:1px solid #EAECF0;color:#1A1D26;text-align:right;font-size:13px;font-weight:600;">${fmtCurrency(it.qty * it.rate, inv.currency)}</td>
   </tr>`
     )
     .join('');
 
-  const statusColor = inv.status === 'paid' ? '#0D9F5F' : inv.status === 'partial' ? '#D97706' : '#DC143C';
+  const stColor = inv.status === 'paid' ? '#0D9F5F' : inv.status === 'partial' ? '#D97706' : '#DC143C';
+  const e = escapeHTML;
+  const payLink = safeUrl(inv.paymentLink);
 
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
@@ -88,36 +200,36 @@ export function generatePrintHTML(inv, logoBase64) {
       </div>
       <div class="hdr-r">
         <div class="inv">INVOICE</div>
-        <div class="num">#${inv.invoiceNumber}</div>
+        <div class="num">#${e(inv.invoiceNumber)}</div>
       </div>
     </div>
     <div class="body">
       <div class="mg">
         <div class="ms">
           <h3>Bill To</h3>
-          <p class="v">${inv.clientName}${inv.clientDesignation ? `<br/><span style="color:#8892A7;font-size:12px">${inv.clientDesignation}</span>` : ''}</p>
-          <p class="v" style="margin-top:2px">${inv.businessName}</p>
-          ${inv.clientEmail ? `<p style="font-size:12px;margin-top:2px">${inv.clientEmail}</p>` : ''}
-          ${inv.clientPhone ? `<p style="font-size:12px">${inv.clientPhone}</p>` : ''}
-          ${inv.clientAddress ? `<p style="font-size:12px">${inv.clientAddress}</p>` : ''}
+          <p class="v">${e(inv.clientName)}${inv.clientDesignation ? `<br/><span style="color:#8892A7;font-size:12px">${e(inv.clientDesignation)}</span>` : ''}</p>
+          <p class="v" style="margin-top:2px">${e(inv.businessName)}</p>
+          ${inv.clientEmail ? `<p style="font-size:12px;margin-top:2px">${e(inv.clientEmail)}</p>` : ''}
+          ${inv.clientPhone ? `<p style="font-size:12px">${e(inv.clientPhone)}</p>` : ''}
+          ${inv.clientAddress ? `<p style="font-size:12px">${e(inv.clientAddress)}</p>` : ''}
         </div>
         <div class="ms" style="text-align:right">
           <h3>Invoice Details</h3>
           <p><span style="color:#8892A7">Date:</span> <span class="v">${fmtDate(inv.date)}</span></p>
           <p><span style="color:#8892A7">Due:</span> <span class="v">${inv.dueDate ? fmtDate(inv.dueDate) : 'Upon Receipt'}</span></p>
-          <p><span style="color:#8892A7">Currency:</span> <span class="v">${inv.currency}</span></p>
-          <p><span style="color:#8892A7">Status:</span> <span class="v" style="color:${statusColor}">${(inv.status || 'unpaid').toUpperCase()}</span></p>
+          <p><span style="color:#8892A7">Currency:</span> <span class="v">${e(inv.currency)}</span></p>
+          <p><span style="color:#8892A7">Status:</span> <span class="v" style="color:${stColor}">${e((inv.status || 'unpaid').toUpperCase())}</span></p>
         </div>
       </div>
       <table><thead><tr><th>#</th><th>Description</th><th>Qty</th><th>Rate</th><th>Amount</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="tots"><div class="tots-b">
         <div class="tr"><span>Subtotal</span><span>${fmtCurrency(inv.totalPayment, inv.currency)}</span></div>
-        <div class="tr paid"><span>Paid</span><span>- ${fmtCurrency(inv.payingNow, inv.currency)}</span></div>
-        <div class="tr rem"><span>Balance Due</span><span>${fmtCurrency(inv.remaining, inv.currency)}</span></div>
         <div class="tr total"><span>Total</span><span>${fmtCurrency(inv.totalPayment, inv.currency)}</span></div>
+        <div class="tr paid"><span>Paid</span><span>- ${fmtCurrency(invoiceReceived(inv), inv.currency)}</span></div>
+        <div class="tr rem"><span>Balance Due</span><span>${fmtCurrency(inv.status === 'paid' ? 0 : Math.max(0, (Number(inv.totalPayment) || 0) - invoiceReceived(inv)), inv.currency)}</span></div>
       </div></div>
-      ${inv.specialNotes ? `<div class="notes"><h4>Special Notes</h4><p>${inv.specialNotes.replace(/\n/g, '<br/>')}</p></div>` : ''}
-      ${inv.paymentLink ? `<div class="pay"><a href="${inv.paymentLink}">💳 Pay Now: [Click Here To Pay]</a></div>` : ''}
+      ${inv.specialNotes ? `<div class="notes"><h4>Special Notes</h4><p>${e(inv.specialNotes).replace(/\n/g, '<br/>')}</p></div>` : ''}
+      ${payLink ? `<div class="pay"><a href="${payLink}">💳 Pay Now: [Click Here To Pay]</a></div>` : ''}
     </div>
     <div class="ft">
       <p class="loc">DUBAI · MUSCAT · NEW YORK</p>
@@ -255,6 +367,18 @@ export function extractSalariesFromInvoice(inv) {
  * - partially paid → capped at paid amount in old month (marked paid), remaining balance cloned to new month.
  * - fully paid → stays in old month.
  */
+const monthlyKey = (r) => `${(r.employeeName || '').trim().toLowerCase()}|${(r.projectName || '').trim().toLowerCase()}`;
+
+/**
+ * True when `month` already has a monthly salary installment for the same
+ * employee + project. Used to stop the "auto-push on paid" and the monthly
+ * rollover from both creating next month's installment (duplicate salaries).
+ */
+export function hasMonthlyInstallment(records, row, month) {
+  const key = monthlyKey(row);
+  return records.some((r) => r.month === month && r.salaryType === 'monthly' && r.id !== row.id && monthlyKey(r) === key);
+}
+
 export function rolloverSalariesMonth(records, newMonth) {
   const last = prevYM(newMonth);
   const result = [];
@@ -267,16 +391,26 @@ export function rolloverSalariesMonth(records, newMonth) {
 
       if (row.salaryType === 'monthly') {
         // 1. Create the NEW regular monthly installment for the new month
-        result.push({
-          ...row,
-          id: `sal-rollover-${row.id}-${Date.now()}`,
-          month: newMonth,
-          paidAmount: 0,
-          status: 'unpaid',
-          rolledOver: true,
-          originalMonth: row.originalMonth || last,
-          createdAt: new Date().toISOString(),
-        });
+        //    (unless one already exists, e.g. auto-pushed when this row was paid)
+        if (!hasMonthlyInstallment([...records, ...result], row, newMonth)) {
+          result.push({
+            ...row,
+            id: `sal-rollover-${row.id}-${Date.now()}`,
+            month: newMonth,
+            paidAmount: 0,
+            status: 'unpaid',
+            rolledOver: true,
+            autoPushed: false,
+            originalMonth: row.originalMonth || last,
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        // Fully paid last month → nothing more to carry
+        if (paid >= total && total > 0) {
+          result.push(row);
+          return;
+        }
 
         // 2. Handle the OLD installment
         if (paid > 0) {
@@ -351,3 +485,24 @@ export function getNextMonthDate(dateStr) {
   return `${yStr}-${mStr}-${dStr}`;
 }
 
+
+/* ── Bills (misc payments) ── */
+export const FIXED_BILL_SECTIONS = ['monthly', 'one-time'];
+
+// Bills that apply to a given month: one-time bills only in their month,
+// monthly/custom-section bills from the month they were created onwards.
+export function billsForMonth(bills = [], month) {
+  return bills.filter((b) => {
+    if (b.type === 'one-time') return b.month === month;
+    const since = (b.createdAt || '').slice(0, 7);
+    return !since || since <= month;
+  });
+}
+
+export function billsSummary(bills = [], billPayments = {}, month) {
+  const list = billsForMonth(bills, month);
+  const payments = billPayments[month] || {};
+  const total = list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  const paid = list.reduce((s, b) => s + Math.min(Number(payments[b.id]) || 0, Number(b.amount) || 0), 0);
+  return { list, total, paid, pending: Math.max(0, total - paid) };
+}

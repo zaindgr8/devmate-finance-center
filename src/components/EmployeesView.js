@@ -1,20 +1,21 @@
 import React, { useState, useRef } from 'react';
+import { currentYM } from '../utils/helpers';
+
+const DEPARTMENTS = ['Management', 'Web Development', 'App Development', 'Designing', 'Digital Marketing', 'BlockChain', 'AI', 'IOT'];
 
 const EMPTY_EMP = {
   name: '', role: '', department: 'Management', email: '',
   phone: '', joinDate: '', status: 'active', notes: '',
+  baseSalary: '', salaryType: 'monthly',
 };
+
+const isOpen = (s) => s.status !== 'paid' && s.status !== 'pushed';
 
 const STATUS_COLORS = {
   active: { bg: '#ECFDF3', color: '#0D9F5F' },
   inactive: { bg: '#FEF2F4', color: '#DC143C' },
   onleave: { bg: '#FFFBEB', color: '#D97706' },
 };
-
-function currentYM() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
 
 function Avatar({ name }) {
   const initials = (name || '?').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
@@ -67,7 +68,6 @@ export default function EmployeesView({
   // Drag state for cards
   const [dragEmpId, setDragEmpId] = useState(null);
   const [dragOverEmpId, setDragOverEmpId] = useState(null);
-  const [localOrder, setLocalOrder] = useState(null);
 
   // ─── helpers ──────────────────────────────────────────
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -88,8 +88,8 @@ export default function EmployeesView({
   };
 
   const openEdit = (emp) => {
-    const validDepts = ['Management', 'Web Development', 'App Development', 'Designing', 'Digital Marketing', 'BlockChain', 'AI'];
-    setForm({ ...emp, department: validDepts.includes(emp.department) ? emp.department : 'Management' });
+    // Keep unknown (legacy) departments instead of silently resetting them
+    setForm({ ...EMPTY_EMP, ...emp, department: emp.department || 'Management' });
     setEditEmp(emp);
     setShowForm(true);
     // Scroll to top so the form is immediately visible
@@ -103,8 +103,12 @@ export default function EmployeesView({
 
   const save = () => {
     if (!form.name.trim()) { alert('Employee name is required.'); return; }
+    const dup = employees.find(e => e.name?.trim().toLowerCase() === form.name.trim().toLowerCase() && e.id !== editEmp?.id);
+    if (dup) { alert(`An employee named "${dup.name}" already exists. Salaries are matched by name, so names must be unique.`); return; }
     const emp = {
       ...form,
+      name: form.name.trim(),
+      baseSalary: Number(form.baseSalary) || 0,
       id: editEmp ? editEmp.id : `emp-${Date.now()}`,
       createdAt: editEmp ? editEmp.createdAt : new Date().toISOString(),
     };
@@ -151,21 +155,20 @@ export default function EmployeesView({
     if (!dragEmpId || !dragOverEmpId || dragEmpId === dragOverEmpId) {
       setDragEmpId(null); setDragOverEmpId(null); return;
     }
-    const base = localOrder || [...employees];
+    const base = [...employees];
     const fromIdx = base.findIndex(x => x.id === dragEmpId);
     const toIdx   = base.findIndex(x => x.id === dragOverEmpId);
     if (fromIdx === -1 || toIdx === -1) { setDragEmpId(null); setDragOverEmpId(null); return; }
     const next = [...base];
     const [moved] = next.splice(fromIdx, 1);
     next.splice(toIdx, 0, moved);
-    setLocalOrder(next);
     if (onReorder) onReorder(next);
     setDragEmpId(null); setDragOverEmpId(null);
   };
 
   // ─── filtering ────────────────────────────────────────
   const thisMonth = currentYM();
-  const orderedEmps = localOrder || [...employees];
+  const orderedEmps = employees;
 
   const baseFiltered = orderedEmps.filter(e =>
     !searchQ ||
@@ -185,8 +188,9 @@ export default function EmployeesView({
   });
 
   // ─── stats ────────────────────────────────────────────
-  const activeCount     = employees.filter(e => e.status === 'active').length;
-  const totalBaseSalary = employees.reduce((s, e) => s + (Number(e.baseSalary) || 0), 0);
+  const activeEmps      = employees.filter(e => e.status === 'active' || !e.status);
+  const activeCount     = activeEmps.length;
+  const totalBaseSalary = activeEmps.reduce((s, e) => s + (Number(e.baseSalary) || 0), 0);
   const totalPaidOut    = salaries.reduce((s, sal) => s + (Number(sal.paidAmount) || 0), 0);
 
   // ─── render ───────────────────────────────────────────
@@ -208,10 +212,10 @@ export default function EmployeesView({
       </div>
 
       {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16, marginBottom: 24 }}>
+      <div className="summary-3">
         {[
           { label: 'Active Employees', val: activeCount, color: 'var(--success)' },
-          { label: 'Total Base Salary / Mo', val: `AED ${totalBaseSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, color: 'var(--warning)' },
+          { label: 'Base Payroll / Mo (Active)', val: `AED ${totalBaseSalary.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, color: 'var(--warning)' },
           { label: 'Total Paid Out (All Time)', val: `AED ${totalPaidOut.toLocaleString('en-US', { minimumFractionDigits: 2 })}`, color: 'var(--info)' },
         ].map(({ label, val, color }) => (
           <div key={label} style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', boxShadow: 'var(--shadow)' }}>
@@ -228,7 +232,7 @@ export default function EmployeesView({
             {editEmp ? `Edit — ${editEmp.name}` : 'New Employee'}
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 14 }}>
+          <div className="form-grid-3" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14, marginBottom: 14 }}>
             {[
               { label: 'Full Name *', key: 'name', type: 'text', placeholder: 'e.g. Ahmed Faraz' },
               { label: 'Role / Position', key: 'role', type: 'text', placeholder: 'e.g. Web Developer' },
@@ -244,7 +248,7 @@ export default function EmployeesView({
             <div>
               <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Department</div>
               <select value={form.department} onChange={e => set('department', e.target.value)} className="form-select">
-                {['Management', 'Web Development', 'App Development', 'Designing', 'Digital Marketing', 'BlockChain', 'AI', 'IOT',].map(o => <option key={o}>{o}</option>)}
+                {[...DEPARTMENTS, ...(form.department && !DEPARTMENTS.includes(form.department) ? [form.department] : [])].map(o => <option key={o}>{o}</option>)}
               </select>
             </div>
             <div>
@@ -253,6 +257,17 @@ export default function EmployeesView({
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
                 <option value="onleave">On Leave</option>
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Base Salary (AED / month)</div>
+              <input type="number" min="0" value={form.baseSalary ?? ''} placeholder="0" onChange={e => set('baseSalary', e.target.value)} className="form-input" />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 4, fontWeight: 600 }}>Default Salary Type</div>
+              <select value={form.salaryType || 'monthly'} onChange={e => set('salaryType', e.target.value)} className="form-select">
+                <option value="monthly">🔄 Monthly</option>
+                <option value="project">📦 One-Time / Project</option>
               </select>
             </div>
           </div>
@@ -428,6 +443,17 @@ export default function EmployeesView({
             const paidSals     = displaySals.filter(s => s.status === 'paid' || s.status === 'pushed');
             const pendingTotal = pendingSals.reduce((sum, s) => sum + Math.max(0, (Number(s.totalSalary) || 0) - (Number(s.paidAmount) || 0)), 0);
             const paidTotal    = paidSals.reduce((sum, s) => sum + (Number(s.paidAmount) || 0), 0);
+            // Quick-pay goes to the oldest outstanding salary, never an already-settled one
+            const payTarget = allEmpSals.filter(isOpen).sort((a, b) => (a.month || '').localeCompare(b.month || ''))[0];
+            const applyQuickPay = () => {
+              const t = payTarget;
+              const amt = Number(quickPayAmount) || 0;
+              if (!t || amt <= 0) return;
+              const tot = Number(t.totalSalary) || 0;
+              const np = Math.min(tot || Infinity, (Number(t.paidAmount) || 0) + amt);
+              onUpdateSalary(t.id, { paidAmount: np, status: np >= tot && tot > 0 ? 'paid' : np > 0 ? 'partial' : 'unpaid' });
+              setQuickPayEmpId(null); setQuickPayAmount('');
+            };
             const isPendingOpen = expandedCardSections[emp.id]?.pending;
             const isPaidOpen    = expandedCardSections[emp.id]?.paid;
 
@@ -466,7 +492,7 @@ export default function EmployeesView({
                     <div style={{ fontSize: 12, color: 'var(--text-light)' }}>{emp.role}{emp.department ? ` · ${emp.department}` : ''}</div>
                   </div>
                   <span style={{ marginLeft: 'auto', marginRight: 28, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.8, background: st.bg, color: st.color, borderRadius: 20, padding: '3px 10px' }}>
-                    {emp.status === 'onleave' ? 'On Leave' : emp.status}
+                    {emp.status === 'onleave' ? 'On Leave' : (emp.status || 'active')}
                   </span>
                 </div>
 
@@ -474,7 +500,8 @@ export default function EmployeesView({
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px 14px', fontSize: 12, marginBottom: 12 }}>
                   {emp.email    && <div><span style={{ color: 'var(--text-faint)' }}>📧 </span>{emp.email}</div>}
                   {emp.phone    && <div><span style={{ color: 'var(--text-faint)' }}>📞 </span>{emp.phone}</div>}
-                  {emp.joinDate && <div><span style={{ color: 'var(--text-faint)' }}>📅 Joined: </span>{new Date(emp.joinDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</div>}
+                  {emp.joinDate && <div><span style={{ color: 'var(--text-faint)' }}>📅 Joined: </span>{new Date(`${emp.joinDate}T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}</div>}
+                  {Number(emp.baseSalary) > 0 && <div><span style={{ color: 'var(--text-faint)' }}>💼 Base: </span>AED {Number(emp.baseSalary).toLocaleString()}</div>}
                 </div>
 
                 {/* Minimalist salary section */}
@@ -550,40 +577,30 @@ export default function EmployeesView({
                 {/* Quick-pay inline / Edit + Add Payment buttons */}
                 {quickPayEmpId === emp.id ? (
                   <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Add Payment to Top Project</div>
-                    {allEmpSals.length > 0 ? (
+                    <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Add Payment to Oldest Due Salary</div>
+                    {payTarget ? (
                       <>
-                        <div style={{ fontSize: 11, color: 'var(--text-mid)', marginBottom: 8 }}>Project: <strong>{allEmpSals[0].projectName || 'Unnamed'}</strong></div>
+                        <div style={{ fontSize: 11, color: 'var(--text-mid)', marginBottom: 8 }}>
+                          <strong>{payTarget.projectName || (payTarget.salaryType === 'monthly' ? 'Monthly Salary' : 'Unnamed')}</strong> · {payTarget.month} · AED {Math.max(0, (Number(payTarget.totalSalary) || 0) - (Number(payTarget.paidAmount) || 0)).toLocaleString()} due
+                        </div>
                         <div style={{ display: 'flex', gap: 6 }}>
                           <input
                             autoFocus type="number" className="form-input"
                             placeholder="Amount..." value={quickPayAmount}
                             onChange={e => setQuickPayAmount(e.target.value)}
                             onKeyDown={e => {
-                              if (e.key === 'Enter') {
-                                const t = allEmpSals[0];
-                                const np = (Number(t.paidAmount) || 0) + (Number(quickPayAmount) || 0);
-                                const tot = Number(t.totalSalary) || 0;
-                                onUpdateSalary(t.id, { paidAmount: np, status: np >= tot && tot > 0 ? 'paid' : np > 0 ? 'partial' : 'unpaid' });
-                                setQuickPayEmpId(null); setQuickPayAmount('');
-                              }
+                              if (e.key === 'Enter') applyQuickPay();
                               if (e.key === 'Escape') { setQuickPayEmpId(null); setQuickPayAmount(''); }
                             }}
                             style={{ padding: '6px 10px', fontSize: 13 }}
                           />
                           <button
-                            onClick={() => {
-                              const t = allEmpSals[0];
-                              const np = (Number(t.paidAmount) || 0) + (Number(quickPayAmount) || 0);
-                              const tot = Number(t.totalSalary) || 0;
-                              onUpdateSalary(t.id, { paidAmount: np, status: np >= tot && tot > 0 ? 'paid' : np > 0 ? 'partial' : 'unpaid' });
-                              setQuickPayEmpId(null); setQuickPayAmount('');
-                            }}
+                            onClick={applyQuickPay}
                             style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, padding: '0 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
                           >Add</button>
                         </div>
                       </>
-                    ) : <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>No projects for this employee.</div>}
+                    ) : <div style={{ fontSize: 11, color: 'var(--text-faint)' }}>Nothing outstanding for this employee.</div>}
                     <button onClick={() => { setQuickPayEmpId(null); setQuickPayAmount(''); }} style={{ marginTop: 8, background: 'none', border: 'none', color: 'var(--text-light)', fontSize: 11, cursor: 'pointer', padding: 0 }}>Cancel</button>
                   </div>
                 ) : (

@@ -1,12 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Icon from './Icon';
+import { currentYM, fmtMonth, billsForMonth, downloadCSV } from '../utils/helpers';
 
 const CATEGORIES = ['Personal', 'Private', 'Business', 'Other'];
-
-function currentYM() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
 
 const DEFAULT_SECTIONS = [
   { id: 'monthly', label: '🔄 Monthly Bills', color: '#ef4444' },
@@ -54,17 +50,21 @@ export default function BillsView({
 
   const isCurrentMonth = filterMonth === currentYM();
 
-  // Sections fallback
+  // Sections fallback (seed the DB once, outside render)
+  const hasSections = propSections && propSections.length > 0;
   let activeSections = propSections;
-  if (!activeSections || activeSections.length === 0) {
+  if (!hasSections) {
     try {
       const s = localStorage.getItem('misc_bill_sections');
       activeSections = s ? JSON.parse(s) : DEFAULT_SECTIONS;
-      if (onUpdateSections) onUpdateSections(activeSections);
     } catch {
       activeSections = DEFAULT_SECTIONS;
     }
   }
+  useEffect(() => {
+    if (!hasSections && onUpdateSections) onUpdateSections(activeSections);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasSections]);
 
   const updateSections = (ns) => {
     if (onUpdateSections) onUpdateSections(ns);
@@ -79,27 +79,37 @@ export default function BillsView({
     ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month),
   ])].sort().reverse();
 
+  // Bills that apply to the selected month (recurring ones only from the month they were added)
+  const monthBills = billsForMonth(bills, filterMonth);
+  // Bills whose section was deleted still count; show them under Monthly so they stay editable
+  const knownSections = new Set(activeSections.map(s => s.id));
+  const sectionOf = (b) => (knownSections.has(b.type) ? b.type : 'monthly');
+
   const getBillsForSection = (sectionId) => {
-    const filtered = sectionId === 'one-time'
-      ? bills.filter(b => b.type === 'one-time' && b.month === filterMonth)
-      : bills.filter(b => b.type === sectionId);
+    const filtered = monthBills.filter(b => sectionOf(b) === sectionId);
     return [...filtered].sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
   };
 
-  // Totals — monthly bills always counted, one-time only for the selected month
-  const monthlyTemplateTotal = bills.filter(b => b.type === 'monthly').reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const oneTimeTotal = bills.filter(b => b.type === 'one-time' && b.month === filterMonth).reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const customTotal = activeSections.filter(s => !['monthly', 'one-time'].includes(s.id))
-    .reduce((sum, s) => sum + bills.filter(b => b.type === s.id).reduce((ss, b) => ss + (Number(b.amount) || 0), 0), 0);
-  const totalThisMonth = monthlyTemplateTotal + oneTimeTotal + customTotal;
+  const sumOf = (list) => list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  const monthlyTemplateTotal = sumOf(monthBills.filter(b => b.type !== 'one-time'));
+  const oneTimeTotal = sumOf(monthBills.filter(b => b.type === 'one-time'));
+  const totalThisMonth = monthlyTemplateTotal + oneTimeTotal;
 
   // Paid / pending derived from billPayments for the selected month
-  const monthPayments = billPayments[filterMonth] || {};
-  const paidTotal = bills.reduce((s, b) => {
+  const paidTotal = monthBills.reduce((s, b) => {
     const paid = getPaidForMonth(billPayments, filterMonth, b.id);
     return s + Math.min(paid, Number(b.amount) || 0);
   }, 0);
   const pendingTotal = totalThisMonth - paidTotal;
+
+  const exportCSV = () => {
+    const rows = [['Bill', 'Section', 'Category', 'Amount (AED)', 'Paid (AED)', 'Status']];
+    monthBills.forEach(b => {
+      const paid = getPaidForMonth(billPayments, filterMonth, b.id);
+      rows.push([b.name, (activeSections.find(s => s.id === sectionOf(b)) || {}).label || b.type, b.category || 'Other', b.amount, paid, getBillStatus(paid, Number(b.amount) || 0)]);
+    });
+    downloadCSV(`bills-${filterMonth}.csv`, rows);
+  };
 
   const resetForm = () => { setForm(EMPTY_FORM); setEditId(null); setShowForm(false); };
 
@@ -195,7 +205,10 @@ export default function BillsView({
   };
   const handleDeleteSection = (sectionId) => {
     if (['monthly', 'one-time'].includes(sectionId)) return;
-    if (window.confirm('Delete this section? Bills in it won\'t be lost.')) updateSections(activeSections.filter(s => s.id !== sectionId));
+    const moved = bills.filter(b => b.type === sectionId);
+    if (!window.confirm(`Delete this section?${moved.length ? ` Its ${moved.length} bill(s) will move to Monthly Bills.` : ''}`)) return;
+    if (moved.length && onReorder) onReorder(bills.map(b => (b.type === sectionId ? { ...b, type: 'monthly' } : b)));
+    updateSections(activeSections.filter(s => s.id !== sectionId));
   };
 
   const statusBadge = (paidAmt, totalAmt) => {
@@ -211,11 +224,7 @@ export default function BillsView({
 
   const cardStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 20px', boxShadow: 'var(--shadow)' };
 
-  // Format month label nicely e.g. "2026-08" → "Aug 2026"
-  const formatMonth = (ym) => {
-    const [y, m] = ym.split('-');
-    return new Date(Number(y), Number(m) - 1).toLocaleString('default', { month: 'short', year: 'numeric' });
-  };
+  const formatMonth = fmtMonth;
 
   return (
     <div className="animate-fade-in">
@@ -241,6 +250,14 @@ export default function BillsView({
               📅 Viewing History
             </span>
           )}
+          <button
+            onClick={exportCSV}
+            disabled={monthBills.length === 0}
+            className="btn btn-ghost btn-md"
+            title="Export this month to CSV"
+          >
+            <Icon name="download" size={14} /> CSV
+          </button>
           <button
             onClick={() => { resetForm(); setShowForm(true); }}
             style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}

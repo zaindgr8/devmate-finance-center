@@ -22,6 +22,32 @@ const toSnake = (obj) => {
   return newObj;
 };
 
+// Upsert that survives schema drift: if PostgREST reports a column that doesn't
+// exist (PGRST204), drop that field and retry instead of losing the whole write.
+async function safeUpsert(table, payload, onConflict) {
+  let rows = Array.isArray(payload) ? payload.map((r) => ({ ...r })) : [{ ...payload }];
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { error } = await supabase.from(table).upsert(rows, { onConflict });
+    if (!error) return;
+    const missing = error.code === 'PGRST204' && /'([^']+)' column/.exec(error.message || '');
+    if (!missing) {
+      console.error(`Error upserting ${table}:`, error);
+      throw error;
+    }
+    console.warn(`[${table}] column "${missing[1]}" not in schema — saving without it`);
+    rows = rows.map(({ [missing[1]]: _drop, ...rest }) => rest);
+  }
+  throw new Error(`Could not save to ${table}`);
+}
+
+async function checked(promise, label) {
+  const { error } = await promise;
+  if (error) {
+    console.error(`Error ${label}:`, error);
+    throw error;
+  }
+}
+
 export async function fetchAllData() {
   const [
     { data: clients },
@@ -38,6 +64,11 @@ export async function fetchAllData() {
     supabase.from('app_settings').select('*'),
     supabase.from('employees').select('*').order('created_at', { ascending: false }),
   ]);
+
+  // Surface a failed core query instead of silently rendering an empty portal
+  if (settings === null && clients === null && invoices === null) {
+    throw new Error('Could not reach the database');
+  }
 
   // Fetch bills separately so a missing table doesn't break the whole load
   const miscBillsSet = (settings || []).find(s => s.key === 'misc_bills');
@@ -77,6 +108,12 @@ export async function fetchAllData() {
   try {
     personalData = personalPaymentsSet ? toCamel(JSON.parse(personalPaymentsSet.value || '{}')) : { allahPaid: 0, savedAmount: 0 };
   } catch (_) { personalData = { allahPaid: 0, savedAmount: 0 }; }
+
+  const employeesOrderSet = (settings || []).find(s => s.key === 'employees_order');
+  let employeesOrder = [];
+  try {
+    employeesOrder = employeesOrderSet ? JSON.parse(employeesOrderSet.value || '[]') : [];
+  } catch (_) { employeesOrder = []; }
 
   const urgentSalaryIdsSet = (settings || []).find(s => s.key === 'urgent_salary_ids');
   let urgentSalaryIds = [];
@@ -119,7 +156,14 @@ export async function fetchAllData() {
     }),
     finance: (finance || []).map(toCamel),
     salaries: (salaries || []).map(toCamel).sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999)),
-    employees: (employees || []).map(toCamel),
+    employees: (employees || []).map(toCamel).sort((a, b) => {
+      const idxA = employeesOrder.indexOf(a.id);
+      const idxB = employeesOrder.indexOf(b.id);
+      if (idxA === -1 && idxB === -1) return 0;
+      if (idxA === -1) return -1; // new employees (not yet ordered) first
+      if (idxB === -1) return 1;
+      return idxA - idxB;
+    }),
     bills: billsData.map(toCamel),
     billSections: sectionsData,
     billPayments: billPaymentsData,
@@ -133,17 +177,11 @@ export async function fetchAllData() {
 export async function upsertClient(client) {
   const payload = toSnake(client);
   // Prefer conflict resolution by 'id' if we have it, otherwise fallback to 'name'
-  const conflictTarget = payload.id ? 'id' : 'name';
-  const { error } = await supabase.from('clients').upsert(payload, { onConflict: conflictTarget });
-  if (error) {
-    console.error('Error upserting client:', error);
-    throw error;
-  }
+  await safeUpsert('clients', payload, payload.id ? 'id' : 'name');
 }
 
 export async function deleteClient(name) {
-  const { error } = await supabase.from('clients').delete().eq('name', name);
-  if (error) console.error('Error deleting client:', error);
+  await checked(supabase.from('clients').delete().eq('name', name), 'deleting client');
 }
 
 export async function upsertInvoice(invoice) {
@@ -153,100 +191,95 @@ export async function upsertInvoice(invoice) {
     payload.finance_raw = payload.finance_data;
     delete payload.finance_data;
   }
-  // Store scheduled_date inside finance_raw to avoid schema issues if column is missing
-  if (payload.scheduled_date) {
-    payload.finance_raw = payload.finance_raw || {};
-    payload.finance_raw.scheduled_date = payload.scheduled_date;
+  payload.finance_raw = { ...(payload.finance_raw || {}) };
+  // Store scheduled_date / paid_at inside finance_raw to avoid schema issues if the columns are missing.
+  // Always overwrite so clearing a value (e.g. un-scheduling) is persisted too.
+  if ('scheduled_date' in payload) {
+    if (payload.scheduled_date) payload.finance_raw.scheduled_date = payload.scheduled_date;
+    else delete payload.finance_raw.scheduled_date;
     delete payload.scheduled_date;
   }
-  // Store paid_at inside finance_raw to avoid schema issues if column is missing
-  if (payload.paid_at) {
-    payload.finance_raw = payload.finance_raw || {};
-    payload.finance_raw.paid_at = payload.paid_at;
+  if ('paid_at' in payload) {
+    if (payload.paid_at) payload.finance_raw.paid_at = payload.paid_at;
+    else delete payload.finance_raw.paid_at;
     delete payload.paid_at;
   }
   // Ensure project_name is always explicitly set
   if (!('project_name' in payload)) {
     payload.project_name = invoice.projectName || '';
   }
-  const { error } = await supabase.from('invoices').upsert(payload, { onConflict: 'invoice_number' });
-  if (error) {
-    console.error('Error upserting invoice:', error);
-    throw error;
-  }
+  await safeUpsert('invoices', payload, 'invoice_number');
 }
 
 export async function deleteInvoice(invoiceNumber) {
-  const { error } = await supabase.from('invoices').delete().eq('invoice_number', invoiceNumber);
-  if (error) console.error('Error deleting invoice:', error);
+  await checked(supabase.from('invoices').delete().eq('invoice_number', invoiceNumber), 'deleting invoice');
 }
 
 export async function upsertFinance(records) {
   if (!records || records.length === 0) return;
-  const payload = records.map(toSnake);
-  const { error } = await supabase.from('finance_ledger').upsert(payload, { onConflict: 'id' });
-  if (error) console.error('Error upserting finance:', error);
+  await safeUpsert('finance_ledger', records.map(toSnake), 'id');
 }
 
 export async function deleteFinance(id) {
-  const { error } = await supabase.from('finance_ledger').delete().eq('id', id);
-  if (error) console.error('Error deleting finance:', error);
+  await checked(supabase.from('finance_ledger').delete().eq('id', id), 'deleting finance row');
 }
 
 export async function upsertSalaries(records) {
   if (!records || records.length === 0) return;
-  const payload = records.map(toSnake);
-  const { error } = await supabase.from('salaries_ledger').upsert(payload, { onConflict: 'id' });
-  if (error) console.error('Error upserting salaries:', error);
+  await safeUpsert('salaries_ledger', records.map(toSnake), 'id');
 }
 
 export async function deleteSalary(id) {
-  const { error } = await supabase.from('salaries_ledger').delete().eq('id', id);
-  if (error) console.error('Error deleting salary:', error);
+  await checked(supabase.from('salaries_ledger').delete().eq('id', id), 'deleting salary');
 }
 
 export async function updateSetting(key, value) {
-  const { error } = await supabase.from('app_settings').upsert({ key, value: String(value) }, { onConflict: 'key' });
-  if (error) console.error('Error updating setting:', error);
+  await checked(
+    supabase.from('app_settings').upsert({ key, value: String(value) }, { onConflict: 'key' }),
+    `updating setting ${key}`
+  );
 }
 
 export async function upsertEmployee(employee) {
-  const payload = toSnake(employee);
-  const { error } = await supabase.from('employees').upsert(payload, { onConflict: 'id' });
-  if (error) {
-    console.error('Error upserting employee:', error);
-    throw error;
-  }
+  await safeUpsert('employees', toSnake(employee), 'id');
 }
 
 export async function deleteEmployee(id) {
-  const { error } = await supabase.from('employees').delete().eq('id', id);
-  if (error) console.error('Error deleting employee:', error);
+  await checked(supabase.from('employees').delete().eq('id', id), 'deleting employee');
 }
 
 // Save entire bills array to app_settings as JSON (no separate table needed)
 export async function saveMiscBills(bills) {
-  const value = JSON.stringify(bills.map(toSnake));
-  const { error } = await supabase
-    .from('app_settings')
-    .upsert({ key: 'misc_bills', value }, { onConflict: 'key' });
-  if (error) console.error('Error saving misc bills:', error);
+  await updateSetting('misc_bills', JSON.stringify(bills.map(toSnake)));
 }
 
 // Save personal payments (Allah Share & Savings) to app_settings
 export async function savePersonalPayments(personalObj) {
-  const value = JSON.stringify(toSnake(personalObj));
-  const { error } = await supabase
-    .from('app_settings')
-    .upsert({ key: 'personal_payments', value }, { onConflict: 'key' });
-  if (error) console.error('Error saving personal payments:', error);
+  await updateSetting('personal_payments', JSON.stringify(toSnake(personalObj)));
 }
 
 // Save month-wise bill payments map: { "YYYY-MM": { "bill-id": paidAmount } }
 export async function saveBillPayments(paymentsObj) {
-  const value = JSON.stringify(paymentsObj);
-  const { error } = await supabase
-    .from('app_settings')
-    .upsert({ key: 'misc_bill_payments', value }, { onConflict: 'key' });
-  if (error) console.error('Error saving bill payments:', error);
+  await updateSetting('misc_bill_payments', JSON.stringify(paymentsObj));
+}
+
+/* ── Auth (Supabase Auth — credentials never live in the bundle) ── */
+export async function getSession() {
+  const { data } = await supabase.auth.getSession();
+  return data.session;
+}
+
+export function onAuthChange(cb) {
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => cb(session));
+  return () => data.subscription.unsubscribe();
+}
+
+export async function signIn(email, password) {
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data.session;
+}
+
+export async function signOut() {
+  await supabase.auth.signOut();
 }

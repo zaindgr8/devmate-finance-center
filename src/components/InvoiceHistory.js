@@ -1,7 +1,13 @@
 import React, { useState } from 'react';
 import Icon from './Icon';
 import { Badge, Btn } from './UI';
-import { fmtDate, fmtCurrency } from '../utils/helpers';
+import { fmtDate, fmtCurrency, today, firstOfMonthStr, isInvoiceOverdue, invoiceReceived, invoiceOutstanding, daysBetween, buildReminderText, downloadCSV, toAED, statusColor } from '../utils/helpers';
+
+// paidAt is an ISO timestamp; compare using the local calendar day
+const localDay = (iso) => {
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso).slice(0, 10) : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 const TABS = [
   { id: 'pending_one_time', label: 'Pending Invoices (One-Time)', color: '#3b82f6' },
@@ -10,15 +16,13 @@ const TABS = [
   { id: 'paid', label: 'Paid', color: '#10b981' },
 ];
 
-export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFilter, setClientFilter, onNew, onPreview, onEdit, onDelete, onUpdateStatus, onConfirmPayment, onReorder }) {
+export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFilter, setClientFilter, onNew, onPreview, onEdit, onDelete, onUpdateStatus, onConfirmPayment, onReorder, onDuplicate, onNotify }) {
   const [activeTab, setActiveTab] = useState('pending_one_time');
 
-  // Date range state for Paid tab
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const firstOfMonth = new Date();
-  firstOfMonth.setDate(1);
-  const firstOfMonthStr = firstOfMonth.toISOString().slice(0, 10);
-  const [dateFrom, setDateFrom] = useState(firstOfMonthStr);
+  // Date range state for Paid tab (local calendar dates)
+  const todayStr = today();
+  const monthStartStr = firstOfMonthStr();
+  const [dateFrom, setDateFrom] = useState(monthStartStr);
   const [dateTo, setDateTo] = useState(todayStr);
 
   // Drag-and-drop state
@@ -59,8 +63,9 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
     const q = searchQ.toLowerCase();
     baseList = baseList.filter(i =>
       i.clientName?.toLowerCase().includes(q) ||
-      i.invoiceNumber?.includes(q) ||
-      i.businessName?.toLowerCase().includes(q)
+      String(i.invoiceNumber || '').includes(q) ||
+      i.businessName?.toLowerCase().includes(q) ||
+      i.projectName?.toLowerCase().includes(q)
     );
   }
 
@@ -82,7 +87,7 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
   const paidList = baseList.filter(i => {
     if (i.status !== 'paid' && i.status !== 'partial') return false;
     // Use paidAt (actual payment date) for filtering; fall back to invoice date for old records
-    const dateToCheck = (i.paidAt || i.date || '').slice(0, 10);
+    const dateToCheck = i.paidAt ? localDay(i.paidAt) : (i.date || '').slice(0, 10);
     if (!dateToCheck) return true;
     if (dateFrom && dateToCheck < dateFrom) return false;
     if (dateTo && dateToCheck > dateTo) return false;
@@ -104,7 +109,30 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
     paid: paidList.length,
   };
 
+  const copyReminder = async (inv) => {
+    const text = buildReminderText(inv);
+    try {
+      await navigator.clipboard.writeText(text);
+      onNotify && onNotify('Reminder copied. Paste it into WhatsApp or email');
+    } catch {
+      window.prompt('Copy this reminder:', text);
+    }
+  };
+
+  const exportCSV = () => {
+    const rows = [['Invoice #', 'Client', 'Business', 'Project', 'Date', 'Due', 'Paid on', 'Status', 'Currency', 'Total', 'Received', 'Outstanding', 'Total (AED)', 'Type']];
+    activeList.forEach(i => rows.push([
+      i.invoiceNumber, i.clientName, i.businessName, i.projectName || '', i.date || '', i.dueDate || '',
+      i.paidAt ? localDay(i.paidAt) : '', isInvoiceOverdue(i, todayStr) ? 'overdue' : (i.status || 'unpaid'), i.currency,
+      Number(i.totalPayment) || 0, invoiceReceived(i), invoiceOutstanding(i), toAED(i.totalPayment, i.currency).toFixed(2),
+      isRecurring(i) ? 'recurring' : 'one-time',
+    ]));
+    downloadCSV(`invoices-${activeTab}-${todayStr}.csv`, rows);
+  };
+
   const renderInvoiceCard = (inv) => {
+    const overdue = isInvoiceOverdue(inv, todayStr);
+    const outstanding = invoiceOutstanding(inv);
     const isDragTarget = dragOverId === inv.invoiceNumber && dragId !== inv.invoiceNumber;
     return (
       <div
@@ -124,6 +152,7 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
           cursor: 'grab',
           opacity: dragId === inv.invoiceNumber ? 0.45 : 1,
           borderTop: isDragTarget ? '3.5px solid var(--primary)' : '1px solid var(--border)',
+          borderLeft: overdue ? '3px solid var(--danger)' : '1px solid var(--border)',
           transition: 'all 0.15s ease',
         }}
       >
@@ -142,7 +171,12 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
             <span style={{ fontWeight: 400, color: 'var(--text-light)', fontSize: 12 }}>· {inv.clientName}</span>
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-light)', marginTop: 2 }}>
-            {inv.businessName} · {fmtDate(inv.date)}
+            {inv.businessName}{inv.projectName ? ` · ${inv.projectName}` : ''} · {fmtDate(inv.date)}
+            {inv.dueDate && inv.status !== 'paid' && inv.status !== 'scheduled' && (
+              <span style={{ marginLeft: 8, color: overdue ? 'var(--danger)' : 'var(--text-light)', fontWeight: overdue ? 700 : 400 }}>
+                · {overdue ? `Overdue ${daysBetween(inv.dueDate, todayStr)}d` : `Due ${fmtDate(inv.dueDate)}`}
+              </span>
+            )}
             {/* Show paid date when the invoice is paid/partial */}
             {(inv.status === 'paid' || inv.status === 'partial') && inv.paidAt && (
               <span style={{ marginLeft: 8, color: 'var(--success)', fontWeight: 600 }}>
@@ -164,6 +198,9 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
               ? (inv.scheduledDate ? new Date(inv.scheduledDate).toLocaleString() : '–')
               : fmtCurrency(inv.payingNow, inv.currency)}
           </div>
+          {inv.status === 'partial' && outstanding > 0 && (
+            <div style={{ fontSize: 11, color: 'var(--warning)', fontWeight: 600 }}>Balance: {fmtCurrency(outstanding, inv.currency)}</div>
+          )}
         </div>
 
         {/* Status badge */}
@@ -183,14 +220,14 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
           </span>
         ) : isRecurring(inv) && (inv.status === 'pending' || inv.status === 'unpaid') ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'flex-end' }}>
-            <Badge color="blue">{inv.status === 'pending' ? 'pending' : (inv.status || 'unpaid')}</Badge>
+            <Badge color={overdue ? 'red' : 'blue'}>{overdue ? 'overdue' : (inv.status || 'unpaid')}</Badge>
             <span style={{ padding: '2px 8px', borderRadius: 20, fontSize: 10, fontWeight: 700, background: 'rgba(37,99,235,0.10)', color: '#2563eb', whiteSpace: 'nowrap' }}>
               🔄 RE-OCCURRING
             </span>
           </div>
         ) : (
-          <Badge color={inv.status === 'paid' ? 'green' : inv.status === 'partial' ? 'yellow' : inv.status === 'pending' ? 'blue' : 'red'}>
-            {inv.status === 'pending' ? 'pending' : (inv.status || 'unpaid')}
+          <Badge color={overdue ? 'red' : statusColor(inv.status)}>
+            {overdue ? 'overdue' : (inv.status || 'unpaid')}
           </Badge>
         )}
 
@@ -219,7 +256,11 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
               ▶ Activate
             </Btn>
           )}
+          {outstanding > 0 && inv.status !== 'scheduled' && (
+            <Btn variant="ghost" size="sm" onClick={() => copyReminder(inv)} title="Copy payment reminder"><Icon name="bell" size={12} /></Btn>
+          )}
           <Btn variant="ghost" size="sm" onClick={() => onPreview(inv)} title="Preview"><Icon name="eye" size={12} /></Btn>
+          {onDuplicate && <Btn variant="ghost" size="sm" onClick={() => onDuplicate(inv)} title="Duplicate"><Icon name="copy" size={12} /></Btn>}
           <Btn variant="ghost" size="sm" onClick={() => onEdit(inv)} title="Edit"><Icon name="edit" size={12} /></Btn>
           <Btn variant="danger" size="sm" onClick={() => onDelete(inv.invoiceNumber)} title="Delete"><Icon name="trash" size={12} /></Btn>
         </div>
@@ -256,7 +297,7 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
             display: 'flex',
             alignItems: 'center',
             gap: 8,
-            boxShadow: '0 4px 14px rgba(99,102,241,0.35)',
+            boxShadow: '0 4px 14px rgba(220,20,60,0.25)',
             transition: 'all 0.2s',
           }}
           onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-1px)'}
@@ -268,18 +309,23 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
       </div>
 
       {/* ── Search bar ── */}
-      <div style={{ position: 'relative', marginBottom: 20, maxWidth: 400 }}>
-        <input
-          className="search-input"
-          value={searchQ}
-          onChange={(e) => setSearchQ(e.target.value)}
-          placeholder="Search invoices..."
-        />
-        <div className="search-icon"><Icon name="search" size={14} /></div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: '1 1 260px', maxWidth: 400 }}>
+          <input
+            className="search-input"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+            placeholder="Search client, business, project or #…"
+          />
+          <div className="search-icon"><Icon name="search" size={14} /></div>
+        </div>
+        <Btn variant="ghost" size="sm" onClick={exportCSV} disabled={activeList.length === 0} title="Export this tab to CSV">
+          <Icon name="download" size={12} /> Export CSV
+        </Btn>
       </div>
 
       {/* ── Tab bar ── */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: '2px solid var(--border)', paddingBottom: 0 }}>
+      <div className="tab-bar">
         {TABS.map(tab => {
           const isActive = activeTab === tab.id;
           return (
@@ -379,7 +425,7 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
               />
             </div>
             <button
-              onClick={() => { setDateFrom(firstOfMonthStr); setDateTo(todayStr); }}
+              onClick={() => { setDateFrom(monthStartStr); setDateTo(todayStr); }}
               style={{
                 padding: '6px 12px',
                 border: '1px solid var(--border)',
@@ -420,7 +466,7 @@ export default function InvoiceHistory({ invoices, searchQ, setSearchQ, clientFi
           <div style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-light)', fontWeight: 600 }}>
             {paidList.length} invoice{paidList.length !== 1 ? 's' : ''} ·{' '}
             <span style={{ color: 'var(--success)' }}>
-              AED {paidList.reduce((s, i) => s + (Number(i.payingNow) || 0), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              AED {paidList.reduce((s, i) => s + toAED(invoiceReceived(i), i.currency), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </span>
           </div>
         </div>
