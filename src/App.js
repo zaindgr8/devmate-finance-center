@@ -14,6 +14,7 @@ import { ReportsView } from './components/ClientsReports';
 import ClientsView from './components/ClientsView';
 // import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
+import AssistantPanel from './components/AssistantPanel';
 import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue, localDateStr } from './utils/helpers';
 import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, saveExpenses, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
 // Using PNG logo from public/logo_2.png
@@ -1094,6 +1095,8 @@ export default function App() {
           )}
           */}
         </main>
+
+        <AssistantPanel />
 
         {view === VIEWS.SALARIES && (showUrgentPanel ? (
           <UrgentSalariesPanel
