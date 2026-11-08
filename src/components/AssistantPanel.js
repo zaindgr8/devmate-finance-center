@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { getSession } from '../api';
 
 // Floating chat box that sends a prompt to /api/assistant (Gemini + Supabase tools)
-export default function AssistantPanel() {
+export default function AssistantPanel({ onDataChanged }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState('');
   const [messages, setMessages] = useState([]); // { role: 'user'|'assistant'|'error', text }
@@ -12,6 +12,10 @@ export default function AssistantPanel() {
     const prompt = input.trim();
     if (!prompt || busy) return;
     setInput('');
+    // Earlier turns (without errors) so follow-up prompts have context
+    const history = messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({ role: m.role, text: m.text }));
     setMessages((m) => [...m, { role: 'user', text: prompt }]);
     setBusy(true);
     try {
@@ -22,9 +26,10 @@ export default function AssistantPanel() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session?.access_token || ''}`,
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, history }),
       });
       const data = await res.json().catch(() => ({}));
+      if (data.changed && onDataChanged) onDataChanged();
       if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
       setMessages((m) => [...m, { role: 'assistant', text: data.reply, toolLog: data.toolLog }]);
     } catch (e) {

@@ -484,6 +484,23 @@ export default function App() {
     [clients, saveClients]
   );
 
+  // Reload records after the AI assistant writes to the database, so the next
+  // invoice number and lists stay in sync with what it created
+  const refreshFromDb = useCallback(async () => {
+    try {
+      const db = await fetchAllData();
+      setInvoices(db.invoices);
+      setClients(db.clients);
+      setNextNum(db.nextNum);
+      setFinance(db.finance || []);
+      setSalaries(db.salaries || []);
+      setEmployees(db.employees || []);
+    } catch (err) {
+      console.error('Refresh after assistant change failed:', err);
+      showToast('Assistant made a change. Reload the page to see it.', 'error');
+    }
+  }, [showToast]);
+
   // Invoice handlers
   const handleSaveInvoice = useCallback(
     (inv) => {
@@ -1096,7 +1113,7 @@ export default function App() {
           */}
         </main>
 
-        <AssistantPanel />
+        <AssistantPanel onDataChanged={refreshFromDb} />
 
         {view === VIEWS.SALARIES && (showUrgentPanel ? (
           <UrgentSalariesPanel
