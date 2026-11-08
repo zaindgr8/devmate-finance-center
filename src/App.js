@@ -495,6 +495,12 @@ export default function App() {
       setFinance(db.finance || []);
       setSalaries(db.salaries || []);
       setEmployees(db.employees || []);
+      // Bills, bill payments and expenses are saved as whole lists, so the UI must
+      // hold the assistant's version or its next save would undo the change
+      setBills(db.bills || []);
+      setBillPayments(db.billPayments || {});
+      setExpenses(db.expenses || []);
+      setUrgentSalaryIds(db.urgentSalaryIds || []);
     } catch (err) {
       console.error('Refresh after assistant change failed:', err);
       showToast('Assistant made a change. Reload the page to see it.', 'error');
