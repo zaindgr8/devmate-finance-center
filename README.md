@@ -6,7 +6,7 @@ Internal finance portal for **Devmate Solutions**: invoices, clients & projects,
 
 - **Dashboard**: cash received this month (vs last month), net cash, outstanding & overdue receivables, salaries due, bills, 6‑month revenue chart, "Needs attention" queue, top clients
 - **Invoices**: auto-numbering from #4001, pending → confirm flow, scheduled & recurring invoices (auto-cloned when paid), overdue tracking, duplicate, copy payment reminder, PDF download, CSV export
-- **Clients**: saved details & default payment link, projects with collection progress, per-client ledger
+- **Clients**: saved details & default payment link,a projects with collection progress, per-client ledger
 - **Salaries**: month tabs, monthly/one-time salaries, inline edits, pay-in-full, push to next month, automatic month rollover, urgent-salaries side panel, CSV export
 - **Employees**: base salary, departments, quick payments to the oldest outstanding salary
 - **Payments (bills)**: monthly/one-time/custom sections, month-wise payments & history, CSV export
