@@ -9,7 +9,9 @@ Internal finance portal for **Devmate Solutions**: invoices, clients & projects,
 - **Clients**: saved details & default payment link,a projects with collection progress, per-client ledger
 - **Salaries**: month tabs, monthly/one-time salaries, inline edits, pay-in-full, push to next month, automatic month rollover, urgent-salaries side panel, CSV exportb
 - **Employees**: base salary, departments, quick payments to the oldest outstanding salary
-- **Payments (bills)**: monthly/one-time/custom sections, month-wise payments & history, CSV export
+- **Payments (bills)**: monthly/one-time/custom sections, month-wise payments & history, CSV export. Each bill row shows **Total | Paid | Pending**; editing opens **inline under that row** (never at the top). Partial payments **add a log entry** (amount + date) instead of overwriting a total; Mark Paid logs the remaining balance; Undo removes only the last log. Categories are only **Personal / Business / Loan**.
+- **Bill Logs**: separate view under Misc Payments — one expandable title per bill/person (▶ arrow) with its full payment history (date, type, amount, note). Logs are keyed by bill id and never store the name, so renaming a bill in Payments renames it in Bill Logs automatically. Each bill also has a **Logs** button that jumps straight to its history. Existing paid totals are migrated once into "Opening balance" logs, so no history is lost. No new Supabase table — logs live in the `misc_bill_payment_logs` app setting, like the other bill data.
+- **Expenses**: commented out / hidden from the sidebar (18 Nov 2026) — the code and data are kept, nothing deleted.
 - **Reports**: monthly invoiced vs cash received, salaries, bills, expected profit & net cash, CSV export
 - Multi-currency (AED, USD, OMR, GBP, EUR). Cross-currency totals are converted to AED using `AED_RATES` in `src/utils/helpers.js`
 
