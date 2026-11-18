@@ -167,8 +167,11 @@ export default function App() {
         //      balance" log per bill/month — no paid amount is lost;
         //  (b) legacy paidAmount on monthly bill templates becomes a log
         //      in the current month, then is stripped from the template.
-        // Categories are also normalised to Personal / Business / Loan
-        // ('Private' and 'Other' become Personal).
+        // Categories are also normalised to Personal / Company / House / Dues
+        // ('Business' → Company, 'Loan' → Dues, 'Private'/'Other' → Personal).
+        // A bill that landed in Personal but whose name says Rent / House /
+        // Loan / Due is re-tagged to House / Dues — an explicit Company or
+        // Dues category is never overridden by the name guess.
         const thisMonthKey = currentYM();
         let loadedLogs = db.billPaymentLogs || {};
         let logsMigrated = false;
@@ -197,7 +200,11 @@ export default function App() {
         // Strip paidAmount from templates + normalise categories, so they're clean
         const cleanBills = (db.bills || []).map(b => {
           const { paidAmount, ...rest } = b;
-          return { ...rest, category: normalizeBillCategory(b.category) };
+          let category = normalizeBillCategory(b.category);
+          const name = (b.name || '').toLowerCase();
+          if (category === 'Personal' && /rent|house/.test(name)) category = 'House';
+          else if (category === 'Personal' && /loan|\bdue\b|dues/.test(name)) category = 'Dues';
+          return { ...rest, category };
         });
         const billsChanged = JSON.stringify(cleanBills) !== JSON.stringify(db.bills || []);
         if (billsChanged) setBills(cleanBills);
