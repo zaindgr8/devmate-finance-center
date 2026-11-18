@@ -4,7 +4,8 @@ import { Badge, Btn } from './UI';
 import {
   fmtDate, fmtCurrency, fmtAED, fmtMonth, today, currentYM, prevYM, toAED,
   invoiceReceived, invoiceOutstanding, isInvoiceOverdue, daysBetween, billsSummary, statusColor,
-  expensesPaidIn, expenseCategory,
+  expensesPaidIn,
+  // expenseCategory — unused while the Expenses section is commented out
 } from '../utils/helpers';
 
 // Month an invoice's money was received: payment date when known, else invoice date
@@ -177,19 +178,20 @@ export default function Dashboard({
         sub: `Awaiting payment confirmation · ${fmtCurrency(inv.payingNow || inv.totalPayment, inv.currency)}`,
         action: { label: 'Confirm', fn: () => onConfirmPayment(inv.invoiceNumber) },
       }));
-    // Expenses overdue or due within 7 days
-    expenses
-      .filter(e => e.status !== 'paid' && e.dueDate && daysBetween(todayStr, e.dueDate) <= 7)
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
-      .forEach(e => {
-        const d = daysBetween(todayStr, e.dueDate);
-        items.push({
-          key: `exp-${e.id}`, tone: d < 0 ? 'danger' : 'warning', icon: d < 0 ? 'alert' : 'calendar',
-          title: `${expenseCategory(e.category).emoji} ${e.title}`,
-          sub: `${fmtCurrency(e.amount, e.currency)} · ${d < 0 ? `overdue by ${-d} day(s)` : d === 0 ? 'due today' : `due in ${d} day(s)`}`,
-          action: { label: 'Open', fn: () => onNavigate('expenses') },
-        });
-      });
+    // Expenses section is commented out (18 Nov 2026) — its "Open" action
+    // would lead to a hidden view, so this attention item is hidden too.
+    // expenses
+    //   .filter(e => e.status !== 'paid' && e.dueDate && daysBetween(todayStr, e.dueDate) <= 7)
+    //   .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+    //   .forEach(e => {
+    //     const d = daysBetween(todayStr, e.dueDate);
+    //     items.push({
+    //       key: `exp-${e.id}`, tone: d < 0 ? 'danger' : 'warning', icon: d < 0 ? 'alert' : 'calendar',
+    //       title: `${expenseCategory(e.category).emoji} ${e.title}`,
+    //       sub: `${fmtCurrency(e.amount, e.currency)} · ${d < 0 ? `overdue by ${-d} day(s)` : d === 0 ? 'due today' : `due in ${d} day(s)`}`,
+    //       action: { label: 'Open', fn: () => onNavigate('expenses') },
+    //     });
+    //   });
     const urgent = salaries.filter(s => urgentSalaryIds.includes(s.id) && s.status !== 'paid' && s.status !== 'pushed');
     if (urgent.length) {
       const amt = urgent.reduce((s, r) => s + Math.max(0, (Number(r.totalSalary) || 0) - (Number(r.paidAmount) || 0)), 0);
@@ -209,7 +211,7 @@ export default function Dashboard({
       });
     }
     return items;
-  }, [stats, invoices, salaries, expenses, urgentSalaryIds, todayStr, ym, onView, onConfirmPayment, onNavigate]);
+  }, [stats, invoices, salaries, urgentSalaryIds, todayStr, ym, onView, onConfirmPayment, onNavigate]); // 'expenses' removed — Expenses attention item is commented out
 
   const recent = invoices.slice(0, 6);
 
