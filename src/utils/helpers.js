@@ -508,14 +508,21 @@ export function billsSummary(bills = [], billPayments = {}, month) {
 }
 
 /* ── Bill categories ──
-   Only three categories exist: Personal / Business / Loan.
-   Legacy values are normalised on load — 'Private' and 'Other' both meant
-   "not a business bill", so they become Personal (re-categorise to Loan
-   from the inline editor where a bill is actually a loan). */
-export const BILL_CATEGORIES = ['Personal', 'Business', 'Loan'];
+   Exactly four groups exist — Personal / Company / House / Dues — and the
+   toggle bar on the Payments page filters by them, so there is one taxonomy
+   for the dropdown and the toggle, not two.
+   Legacy values are normalised on load: 'Business' → Company, 'Loan' →
+   Dues, 'Private' and 'Other' → Personal. A bill whose name says Rent /
+   House / Loan / Due and which landed in the Personal bucket is also
+   re-tagged to House / Dues on load (see App.js) — anything still unsure
+   stays Personal and can be re-tagged with one inline edit. */
+export const BILL_CATEGORIES = ['Personal', 'Company', 'House', 'Dues'];
+export const BILL_GROUPS = ['All', ...BILL_CATEGORIES];
 
 export function normalizeBillCategory(cat) {
-  if (cat === 'Business' || cat === 'Loan') return cat;
+  if (cat === 'Company' || cat === 'Business') return 'Company';
+  if (cat === 'House') return 'House';
+  if (cat === 'Dues' || cat === 'Loan') return 'Dues';
   return 'Personal'; // 'Personal', 'Private', 'Other', missing, anything else
 }
 
