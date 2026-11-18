@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import Icon from './Icon';
 import { Btn } from './UI';
-import { currentYM, fmtMonth, fmtAED, fmtDate, toAED, invoiceReceived, invoiceOutstanding, billsSummary, downloadCSV, expenseCategory } from '../utils/helpers';
+import { currentYM, fmtMonth, fmtAED, fmtDate, toAED, invoiceReceived, invoiceOutstanding, billsSummary, downloadCSV, expenseCategory, normalizeBillCategory } from '../utils/helpers';
 
 
 /* ═══ REPORTS VIEW ═══ */
@@ -69,7 +69,7 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
       [], ['Salaries', 'Project', 'Type', 'Total', 'Paid', 'Status'],
       ...monthSalaries.map(s => [s.employeeName, s.projectName || '', s.salaryType || 'project', s.totalSalary, s.paidAmount || 0, s.status || 'unpaid']),
       [], ['Bills', 'Category', 'Type', 'Amount', 'Paid'],
-      ...monthBills.map(b => [b.name, b.category || 'Other', b.type, b.amount, (billPayments[selectedMonth] || {})[b.id] || 0]),
+      ...monthBills.map(b => [b.name, normalizeBillCategory(b.category), b.type, b.amount, (billPayments[selectedMonth] || {})[b.id] || 0]),
       [], ['Expenses', 'Category', 'Paid on', 'Currency', 'Amount', 'Amount (AED)'],
       ...monthExpenses.map(e => [e.title, expenseCategory(e.category).label, e.paidDate, e.currency, e.amount, toAED(e.amount, e.currency).toFixed(2)]),
     ];
@@ -179,7 +179,7 @@ export function ReportsView({ invoices = [], clients = [], salaries = [], bills 
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{bill.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 3 }}>
-                    {bill.category || 'Other'} · {bill.type === 'one-time' ? `📌 One-Time (${bill.month})` : '🔄 Recurring'}
+                    {normalizeBillCategory(bill.category)} · {bill.type === 'one-time' ? `📌 One-Time (${bill.month})` : '🔄 Recurring'}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
