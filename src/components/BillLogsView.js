@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { currentYM, fmtMonth, normalizeBillCategory, sumBillLogs, billLogsFor } from '../utils/helpers';
+import { currentYM, fmtMonth, normalizeBillCategory, sumBillLogs, billLogsFor, BILL_CATEGORIES } from '../utils/helpers';
 
 // Bill Logs — payment history grouped by bill (person / bill name).
 //
@@ -91,7 +91,7 @@ export default function BillLogsView({
           />
           <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)} className="form-select" style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600 }}>
             <option value="All">All categories</option>
-            {['Personal', 'Business', 'Loan'].map(c => <option key={c} value={c}>{c}</option>)}
+            {BILL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} className="form-select" style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600 }}>
             <option value="all">All months</option>
