@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Icon from './Icon';
 import {
   currentYM, fmtMonth, billsForMonth, downloadCSV, localDateStr,
-  BILL_CATEGORIES, normalizeBillCategory,
+  BILL_CATEGORIES, BILL_GROUPS, normalizeBillCategory,
   billPaidFromLogs, billLogsFor,
 } from '../utils/helpers';
 
@@ -42,6 +42,9 @@ export default function BillsView({
   const [editingBillId, setEditingBillId] = useState(null);
   const [editForm, setEditForm] = useState(EMPTY_FORM);
   const [filterMonth, setFilterMonth] = useState(currentYM());
+  // Toggle bar filter — All | Personal | Company | House | Dues.
+  // The toggle IS the category, so filtering and the dropdown never disagree.
+  const [groupFilter, setGroupFilter] = useState('All');
   const [editSectionId, setEditSectionId] = useState(null);
   const [editSectionLabel, setEditSectionLabel] = useState('');
   const [showAddSection, setShowAddSection] = useState(false);
@@ -87,28 +90,37 @@ export default function BillsView({
 
   // Bills that apply to the selected month (recurring ones only from the month they were added)
   const monthBills = billsForMonth(bills, filterMonth);
+  // Toggle bar: show one group at a time. Summary cards, CSV and the list
+  // below all follow the toggle, so e.g. "House" shows house totals only.
+  const filteredBills = groupFilter === 'All'
+    ? monthBills
+    : monthBills.filter(b => normalizeBillCategory(b.category) === groupFilter);
+  const groupCounts = BILL_GROUPS.reduce((acc, g) => {
+    acc[g] = g === 'All' ? monthBills.length : monthBills.filter(b => normalizeBillCategory(b.category) === g).length;
+    return acc;
+  }, {});
   // Bills whose section was deleted still count; show them under Monthly so they stay editable
   const knownSections = new Set(activeSections.map(s => s.id));
   const sectionOf = (b) => (knownSections.has(b.type) ? b.type : 'monthly');
 
   const getBillsForSection = (sectionId) => {
-    const filtered = monthBills.filter(b => sectionOf(b) === sectionId);
+    const filtered = filteredBills.filter(b => sectionOf(b) === sectionId);
     return [...filtered].sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
   };
 
   const sumOf = (list) => list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const monthlyTemplateTotal = sumOf(monthBills.filter(b => b.type !== 'one-time'));
-  const oneTimeTotal = sumOf(monthBills.filter(b => b.type === 'one-time'));
+  const monthlyTemplateTotal = sumOf(filteredBills.filter(b => b.type !== 'one-time'));
+  const oneTimeTotal = sumOf(filteredBills.filter(b => b.type === 'one-time'));
   const totalThisMonth = monthlyTemplateTotal + oneTimeTotal;
 
   // Paid / pending derived from the payment LOGS for the selected month
   const paidFor = (billId) => billPaidFromLogs(billPaymentLogs, filterMonth, billId);
-  const paidTotal = monthBills.reduce((s, b) => s + Math.min(paidFor(b.id), Number(b.amount) || 0), 0);
+  const paidTotal = filteredBills.reduce((s, b) => s + Math.min(paidFor(b.id), Number(b.amount) || 0), 0);
   const pendingTotal = Math.max(0, totalThisMonth - paidTotal);
 
   const exportCSV = () => {
     const rows = [['Bill', 'Section', 'Category', 'Total (AED)', 'Paid (AED)', 'Pending (AED)', 'Status']];
-    monthBills.forEach(b => {
+    filteredBills.forEach(b => {
       const total = Number(b.amount) || 0;
       const paid = paidFor(b.id);
       rows.push([b.name, (activeSections.find(s => s.id === sectionOf(b)) || {}).label || b.type, normalizeBillCategory(b.category), total, paid, Math.max(0, total - paid), getBillStatus(paid, total)]);
@@ -304,7 +316,7 @@ export default function BillsView({
           )}
           <button
             onClick={exportCSV}
-            disabled={monthBills.length === 0}
+            disabled={filteredBills.length === 0}
             className="btn btn-ghost btn-md"
             title="Export this month to CSV"
           >
@@ -353,6 +365,35 @@ export default function BillsView({
             <div style={{ fontSize: 22, fontWeight: 700, color }}>AED {Number(val).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
           </div>
         ))}
+      </div>
+
+      {/* Toggle bar — All | Personal | Company | House | Dues */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }} role="tablist" aria-label="Filter bills by group">
+        {BILL_GROUPS.map(g => {
+          const active = groupFilter === g;
+          return (
+            <button
+              key={g}
+              role="tab"
+              aria-selected={active}
+              onClick={() => setGroupFilter(g)}
+              style={{
+                padding: '8px 18px', borderRadius: 999, cursor: 'pointer', fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+                background: active ? 'var(--primary)' : 'var(--card)',
+                color: active ? '#fff' : 'var(--text-mid)',
+                border: active ? '1.5px solid var(--primary)' : '1.5px solid var(--border)',
+                boxShadow: active ? 'var(--shadow)' : 'none',
+              }}
+            >
+              {g} ({groupCounts[g]})
+            </button>
+          );
+        })}
+        {groupFilter !== 'All' && (
+          <span style={{ alignSelf: 'center', fontSize: 12, color: 'var(--text-light)', marginLeft: 4 }}>
+            Showing {filteredBills.length} of {monthBills.length} bills · totals above are for {groupFilter} only
+          </span>
+        )}
       </div>
 
       {/* Add Bill form (new bills only — editing happens inline under the row) */}
