@@ -507,6 +507,77 @@ export function billsSummary(bills = [], billPayments = {}, month) {
   return { list, total, paid, pending: Math.max(0, total - paid) };
 }
 
+/* ── Bill categories ──
+   Only three categories exist: Personal / Business / Loan.
+   Legacy values are normalised on load — 'Private' and 'Other' both meant
+   "not a business bill", so they become Personal (re-categorise to Loan
+   from the inline editor where a bill is actually a loan). */
+export const BILL_CATEGORIES = ['Personal', 'Business', 'Loan'];
+
+export function normalizeBillCategory(cat) {
+  if (cat === 'Business' || cat === 'Loan') return cat;
+  return 'Personal'; // 'Personal', 'Private', 'Other', missing, anything else
+}
+
+/* ── Bill payment logs ──
+   Shape: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
+   Logs are keyed by bill.id and never store the bill name — so renaming a
+   bill in Payments automatically renames it in Bill Logs too. There is one
+   source of truth (the bill record); logs only record money in/out.
+   Paid for a bill/month is always the SUM of its logs, so a partial payment
+   adds a log instead of overwriting a total, and history is never lost.
+   kind: 'partial' | 'full' (settles the remaining balance) | 'payment'
+   (opening balance migrated from the old month-totals). */
+export function sumBillLogs(entries = []) {
+  return (entries || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+}
+
+export function billLogsFor(billPaymentLogs = {}, month, billId) {
+  return ((billPaymentLogs[month] || {})[billId]) || [];
+}
+
+export function billPaidFromLogs(billPaymentLogs = {}, month, billId) {
+  return sumBillLogs(billLogsFor(billPaymentLogs, month, billId));
+}
+
+// Derive the old { "YYYY-MM": { billId: paidTotal } } shape from logs, so
+// Dashboard / Reports keep working unchanged.
+export function billPaymentLogsToTotals(billPaymentLogs = {}) {
+  const totals = {};
+  Object.entries(billPaymentLogs).forEach(([month, byBill]) => {
+    Object.entries(byBill || {}).forEach(([billId, entries]) => {
+      const paid = sumBillLogs(entries);
+      if (paid > 0) {
+        totals[month] = totals[month] || {};
+        totals[month][billId] = paid;
+      }
+    });
+  });
+  return totals;
+}
+
+// One-time migration: old month totals had no history, so each becomes a
+// single "Opening balance" log dated the 1st of its month. No paid amount
+// is lost, and from then on every payment is a real log entry.
+export function migrateBillPaymentsToLogs(billPayments = {}) {
+  const logs = {};
+  Object.entries(billPayments || {}).forEach(([month, byBill]) => {
+    Object.entries(byBill || {}).forEach(([billId, paid]) => {
+      const amount = Number(paid) || 0;
+      if (amount <= 0) return;
+      logs[month] = logs[month] || {};
+      logs[month][billId] = [{
+        id: `log-migrated-${month}-${billId}`,
+        amount,
+        date: `${month}-01`,
+        kind: 'payment',
+        note: 'Opening balance — migrated from previous totals',
+      }];
+    });
+  });
+  return logs;
+}
+
 /* ── Expenses (fines, renewals, government fees…) ── */
 export const EXPENSE_CATEGORIES = [
   { id: 'fine', label: 'Fines & Penalties', emoji: '🚨' },
