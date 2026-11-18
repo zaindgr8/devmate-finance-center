@@ -89,6 +89,14 @@ export async function fetchAllData() {
     billPaymentsData = billPaymentsSet ? JSON.parse(billPaymentsSet.value || '{}') : {};
   } catch (_) { billPaymentsData = {}; }
 
+  // Bill payment logs: { "YYYY-MM": { billId: [{ id, amount, date, kind, note }] } }
+  // Paid totals are derived from these (see helpers.billPaymentLogsToTotals).
+  const billPaymentLogsSet = (settings || []).find(s => s.key === 'misc_bill_payment_logs');
+  let billPaymentLogsData = {};
+  try {
+    billPaymentLogsData = billPaymentLogsSet ? JSON.parse(billPaymentLogsSet.value || '{}') : {};
+  } catch (_) { billPaymentLogsData = {}; }
+
   const nextNumSet = (settings || []).find(s => s.key === 'next_invoice_num');
   const lastRolloverSet = (settings || []).find(s => s.key === 'last_rollover');
   const invoiceOrderSet = (settings || []).find(s => s.key === 'invoice_order');
@@ -174,6 +182,7 @@ export async function fetchAllData() {
     expenses: expensesData.map(toCamel),
     billSections: sectionsData,
     billPayments: billPaymentsData,
+    billPaymentLogs: billPaymentLogsData,
     personal: personalData,
     nextNum: nextNumSet ? Number(nextNumSet.value) : 4001,
     lastRollover: lastRolloverSet ? lastRolloverSet.value : null,
@@ -273,6 +282,11 @@ export async function savePersonalPayments(personalObj) {
 // Save month-wise bill payments map: { "YYYY-MM": { "bill-id": paidAmount } }
 export async function saveBillPayments(paymentsObj) {
   await updateSetting('misc_bill_payments', JSON.stringify(paymentsObj));
+}
+
+// Save bill payment logs: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
+export async function saveBillPaymentLogs(logsObj) {
+  await updateSetting('misc_bill_payment_logs', JSON.stringify(logsObj));
 }
 
 /* ── Auth (Supabase Auth — credentials never live in the bundle) ── */
