@@ -1,21 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import Icon from './Icon';
-import { currentYM, fmtMonth, billsForMonth, downloadCSV } from '../utils/helpers';
-
-const CATEGORIES = ['Personal', 'Private', 'Business', 'Other'];
+import {
+  currentYM, fmtMonth, billsForMonth, downloadCSV, localDateStr,
+  BILL_CATEGORIES, normalizeBillCategory,
+  billPaidFromLogs, billLogsFor,
+} from '../utils/helpers';
 
 const DEFAULT_SECTIONS = [
   { id: 'monthly', label: '🔄 Monthly Bills', color: '#ef4444' },
   { id: 'one-time', label: '📌 One-Time Expense', color: '#f59e0b' },
 ];
 
-const EMPTY_FORM = { name: '', amount: '', type: 'monthly', category: 'Other', month: currentYM() };
+const EMPTY_FORM = { name: '', amount: '', type: 'monthly', category: 'Personal', month: currentYM() };
 
-// billPayments: { "YYYY-MM": { "bill-id": paidAmount } }
-function getPaidForMonth(billPayments, month, billId) {
-  return Number((billPayments[month] || {})[billId]) || 0;
-}
-
+// billPaymentLogs: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
+// Paid is always the SUM of a bill's logs for that month — a partial payment
+// ADDS a log, it never overwrites a total, so history is never lost.
 function getBillStatus(paidAmt, totalAmt) {
   if (paidAmt <= 0) return 'pending';
   if (paidAmt >= totalAmt) return 'paid';
@@ -25,17 +25,22 @@ function getBillStatus(paidAmt, totalAmt) {
 export default function BillsView({
   bills = [],
   sections: propSections = [],
-  billPayments = {},
+  billPaymentLogs = {},
   onUpdateSections,
   onAdd,
   onUpdate,
   onDelete,
   onReorder,
-  onPaymentUpdate,
+  onAddPayment,
+  onUndoLastPayment,
+  onViewLogs,
 }) {
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addForm, setAddForm] = useState(EMPTY_FORM);
+  // Inline edit: the editor renders directly under the bill row being edited,
+  // never at the top of the page.
+  const [editingBillId, setEditingBillId] = useState(null);
+  const [editForm, setEditForm] = useState(EMPTY_FORM);
   const [filterMonth, setFilterMonth] = useState(currentYM());
   const [editSectionId, setEditSectionId] = useState(null);
   const [editSectionLabel, setEditSectionLabel] = useState('');
@@ -44,9 +49,10 @@ export default function BillsView({
   const [dragBillId, setDragBillId] = useState(null);
   const [dragOverBillId, setDragOverBillId] = useState(null);
   const [dragSectionId, setDragSectionId] = useState(null);
-  // Inline partial payment editor
-  const [editingPaymentId, setEditingPaymentId] = useState(null);
-  const [paymentDraft, setPaymentDraft] = useState('');
+  // Inline "add a payment" panel (partial or full) — also under the bill row
+  const [paymentBillId, setPaymentBillId] = useState(null);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentDate, setPaymentDate] = useState(localDateStr(new Date()));
 
   const isCurrentMonth = filterMonth === currentYM();
 
@@ -71,10 +77,10 @@ export default function BillsView({
     try { localStorage.setItem('misc_bill_sections', JSON.stringify(ns)); } catch (e) {}
   };
 
-  // Build allMonths: current month + any month that has payments recorded
+  // Build allMonths: current month + any month that has payments/logs recorded
   const allMonths = [...new Set([
     currentYM(),
-    ...Object.keys(billPayments),
+    ...Object.keys(billPaymentLogs || {}),
     // also months from one-time bills
     ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month),
   ])].sort().reverse();
@@ -95,71 +101,85 @@ export default function BillsView({
   const oneTimeTotal = sumOf(monthBills.filter(b => b.type === 'one-time'));
   const totalThisMonth = monthlyTemplateTotal + oneTimeTotal;
 
-  // Paid / pending derived from billPayments for the selected month
-  const paidTotal = monthBills.reduce((s, b) => {
-    const paid = getPaidForMonth(billPayments, filterMonth, b.id);
-    return s + Math.min(paid, Number(b.amount) || 0);
-  }, 0);
-  const pendingTotal = totalThisMonth - paidTotal;
+  // Paid / pending derived from the payment LOGS for the selected month
+  const paidFor = (billId) => billPaidFromLogs(billPaymentLogs, filterMonth, billId);
+  const paidTotal = monthBills.reduce((s, b) => s + Math.min(paidFor(b.id), Number(b.amount) || 0), 0);
+  const pendingTotal = Math.max(0, totalThisMonth - paidTotal);
 
   const exportCSV = () => {
-    const rows = [['Bill', 'Section', 'Category', 'Amount (AED)', 'Paid (AED)', 'Status']];
+    const rows = [['Bill', 'Section', 'Category', 'Total (AED)', 'Paid (AED)', 'Pending (AED)', 'Status']];
     monthBills.forEach(b => {
-      const paid = getPaidForMonth(billPayments, filterMonth, b.id);
-      rows.push([b.name, (activeSections.find(s => s.id === sectionOf(b)) || {}).label || b.type, b.category || 'Other', b.amount, paid, getBillStatus(paid, Number(b.amount) || 0)]);
+      const total = Number(b.amount) || 0;
+      const paid = paidFor(b.id);
+      rows.push([b.name, (activeSections.find(s => s.id === sectionOf(b)) || {}).label || b.type, normalizeBillCategory(b.category), total, paid, Math.max(0, total - paid), getBillStatus(paid, total)]);
     });
     downloadCSV(`bills-${filterMonth}.csv`, rows);
   };
 
-  const resetForm = () => { setForm(EMPTY_FORM); setEditId(null); setShowForm(false); };
+  const resetAddForm = () => { setAddForm(EMPTY_FORM); setShowAddForm(false); };
 
-  const handleSave = () => {
-    if (!form.name.trim()) return alert('Bill name is required.');
-    if (!form.amount || Number(form.amount) <= 0) return alert('Please enter a valid amount.');
-    const payload = { ...form, amount: Number(form.amount) };
-    // Remove any paidAmount that might have been on old records
+  const handleAddSave = () => {
+    if (!addForm.name.trim()) return alert('Bill name is required.');
+    if (!addForm.amount || Number(addForm.amount) <= 0) return alert('Please enter a valid amount.');
+    const payload = { ...addForm, amount: Number(addForm.amount), category: normalizeBillCategory(addForm.category) };
     delete payload.paidAmount;
-    if (editId) {
-      onUpdate(editId, payload);
-    } else {
-      onAdd({
-        ...payload,
-        order: getBillsForSection(form.type).length,
-        id: `bill-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-        createdAt: new Date().toISOString(),
-      });
-    }
-    resetForm();
+    onAdd({
+      ...payload,
+      order: getBillsForSection(addForm.type).length,
+      id: `bill-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      createdAt: new Date().toISOString(),
+    });
+    resetAddForm();
   };
 
+  // Inline edit — opens right under this bill's row
   const handleEdit = (bill) => {
-    setForm({ name: bill.name, amount: bill.amount, type: bill.type, category: bill.category || 'Other', month: bill.month || currentYM() });
-    setEditId(bill.id);
-    setShowForm(true);
+    setPaymentBillId(null);
+    setEditForm({ name: bill.name, amount: bill.amount, type: bill.type, category: normalizeBillCategory(bill.category), month: bill.month || currentYM() });
+    setEditingBillId(bill.id);
   };
 
+  const handleEditSave = () => {
+    if (!editForm.name.trim()) return alert('Bill name is required.');
+    if (!editForm.amount || Number(editForm.amount) <= 0) return alert('Please enter a valid amount.');
+    const payload = { ...editForm, amount: Number(editForm.amount), category: normalizeBillCategory(editForm.category) };
+    delete payload.paidAmount;
+    onUpdate(editingBillId, payload);
+    setEditingBillId(null);
+  };
+
+  // Mark Paid adds ONE log for the remaining balance (kind 'full'), so the
+  // payment is visible in Bill Logs like every other payment.
   const handleMarkPaid = (bill) => {
     if (!isCurrentMonth) return;
-    onPaymentUpdate(filterMonth, bill.id, Number(bill.amount));
+    const pending = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
+    if (pending <= 0) return;
+    if (onAddPayment) onAddPayment(filterMonth, bill.id, pending, localDateStr(new Date()), 'full');
   };
 
   const handleMarkUnpaid = (bill) => {
     if (!isCurrentMonth) return;
-    onPaymentUpdate(filterMonth, bill.id, 0);
+    // Undo removes only the LAST payment log for this bill/month — earlier
+    // partial payments stay in the history instead of being wiped.
+    if (onUndoLastPayment) onUndoLastPayment(filterMonth, bill.id);
   };
 
-  const startEditPayment = (bill) => {
+  const startAddPayment = (bill) => {
     if (!isCurrentMonth) return;
-    const current = getPaidForMonth(billPayments, filterMonth, bill.id);
-    setPaymentDraft(current > 0 ? String(current) : '');
-    setEditingPaymentId(bill.id);
+    setEditingBillId(null);
+    setPaymentAmount('');
+    setPaymentDate(localDateStr(new Date()));
+    setPaymentBillId(bill.id);
   };
 
-  const savePaymentDraft = (bill) => {
-    const val = Number(paymentDraft) || 0;
-    onPaymentUpdate(filterMonth, bill.id, val);
-    setEditingPaymentId(null);
-    setPaymentDraft('');
+  const saveAddPayment = (bill) => {
+    const val = Number(paymentAmount) || 0;
+    const pending = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
+    if (val <= 0) return alert('Enter an amount greater than 0.');
+    if (val > pending) return alert(`Only AED ${pending.toLocaleString()} is still pending for "${bill.name}".`);
+    if (onAddPayment) onAddPayment(filterMonth, bill.id, val, paymentDate || localDateStr(new Date()), val >= pending ? 'full' : 'partial');
+    setPaymentBillId(null);
+    setPaymentAmount('');
   };
 
   // Drag handlers
@@ -226,6 +246,38 @@ export default function BillsView({
 
   const formatMonth = fmtMonth;
 
+  // Shared inline form fields (used by both Add at top and Edit under a row)
+  const formFields = (form, setForm) => (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 14 }}>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Bill Name *</div>
+        <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. House Rent, Gulraiz — Loan" />
+      </div>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
+        <input className="form-input" type="number" min="0" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
+      </div>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Section</div>
+        <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
+          {activeSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
+      </div>
+      <div>
+        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Category</div>
+        <select className="form-select" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
+          {BILL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      {form.type === 'one-time' && (
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Month</div>
+          <input className="form-input" type="month" value={form.month} onChange={e => setForm({ ...form, month: e.target.value })} />
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="animate-fade-in">
       {/* Header */}
@@ -258,8 +310,17 @@ export default function BillsView({
           >
             <Icon name="download" size={14} /> CSV
           </button>
+          {onViewLogs && (
+            <button
+              onClick={() => onViewLogs(null)}
+              className="btn btn-ghost btn-md"
+              title="Open Bill Logs — payment history by bill"
+            >
+              <Icon name="file-text" size={14} /> Bill Logs
+            </button>
+          )}
           <button
-            onClick={() => { resetForm(); setShowForm(true); }}
+            onClick={() => { resetAddForm(); setShowAddForm(true); }}
             style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}
           >
             <Icon name="plus" size={14} /> Add Bill
@@ -294,44 +355,17 @@ export default function BillsView({
         ))}
       </div>
 
-      {/* Add / Edit Form */}
-      {showForm && (
+      {/* Add Bill form (new bills only — editing happens inline under the row) */}
+      {showAddForm && (
         <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderRadius: 14, padding: 24, marginBottom: 24, boxShadow: 'var(--shadow-md)' }}>
           <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 18 }}>
-            {editId ? '✏️ Edit Bill' : '➕ Add New Bill'}
+            ➕ Add New Bill
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 14 }}>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Bill Name *</div>
-              <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. House Rent, Grocery" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
-              <input className="form-input" type="number" min="0" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Section</div>
-              <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-                {activeSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
-              </select>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Category</div>
-              <select className="form-select" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
-                {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            {form.type === 'one-time' && (
-              <div>
-                <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Month</div>
-                <input className="form-input" type="month" value={form.month} onChange={e => setForm({ ...form, month: e.target.value })} />
-              </div>
-            )}
-          </div>
+          {formFields(addForm, setAddForm)}
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button onClick={resetForm} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-            <button onClick={handleSave} style={{ padding: '9px 20px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
-              {editId ? 'Update Bill' : 'Save Bill'}
+            <button onClick={resetAddForm} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+            <button onClick={handleAddSave} style={{ padding: '9px 20px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
+              Save Bill
             </button>
           </div>
         </div>
@@ -385,90 +419,93 @@ export default function BillsView({
             )}
             {items.map(bill => {
               const totalAmt = Number(bill.amount) || 0;
-              const paidAmt = getPaidForMonth(billPayments, filterMonth, bill.id);
+              const paidAmt = paidFor(bill.id);
+              const pendingAmt = Math.max(0, totalAmt - paidAmt);
               const status = getBillStatus(paidAmt, totalAmt);
               const isDragTarget = dragOverBillId === bill.id && dragSectionId === section.id && dragBillId !== bill.id;
-              const isEditingThisPayment = editingPaymentId === bill.id;
+              const isEditingThisBill = editingBillId === bill.id;
+              const isAddingPayment = paymentBillId === bill.id;
+              const logCount = billLogsFor(billPaymentLogs, filterMonth, bill.id).length;
 
               return (
-                <div
-                  key={bill.id}
-                  draggable={isCurrentMonth}
-                  onDragStart={e => handleDragStart(e, bill.id, section.id)}
-                  onDragOver={e => handleDragOver(e, bill.id)}
-                  onDragEnd={() => { setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12,
-                    padding: '13px 16px', background: 'var(--card)',
-                    border: isDragTarget ? `2px solid var(--primary)` : `1px solid ${status === 'paid' ? 'rgba(16,185,129,0.2)' : 'var(--border)'}`,
-                    borderRadius: 12, marginBottom: 8,
-                    cursor: isCurrentMonth ? 'grab' : 'default',
-                    transition: 'box-shadow 0.2s, opacity 0.2s',
-                    opacity: dragBillId === bill.id ? 0.45 : 1,
-                  }}
-                  onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-md)'}
-                  onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
-                >
-                  {/* Drag handle */}
-                  <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: isCurrentMonth ? 'grab' : 'default', userSelect: 'none' }}>⠿</div>
+                <React.Fragment key={bill.id}>
+                  <div
+                    draggable={isCurrentMonth}
+                    onDragStart={e => handleDragStart(e, bill.id, section.id)}
+                    onDragOver={e => handleDragOver(e, bill.id)}
+                    onDragEnd={() => { setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+                      padding: '13px 16px', background: 'var(--card)',
+                      border: isDragTarget ? `2px solid var(--primary)` : `1px solid ${status === 'paid' ? 'rgba(16,185,129,0.2)' : 'var(--border)'}`,
+                      borderRadius: 12, marginBottom: isEditingThisBill || isAddingPayment ? 0 : 8,
+                      borderBottomLeftRadius: isEditingThisBill || isAddingPayment ? 0 : 12,
+                      borderBottomRightRadius: isEditingThisBill || isAddingPayment ? 0 : 12,
+                      cursor: isCurrentMonth ? 'grab' : 'default',
+                      transition: 'box-shadow 0.2s, opacity 0.2s',
+                      opacity: dragBillId === bill.id ? 0.45 : 1,
+                    }}
+                    onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-md)'}
+                    onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
+                  >
+                    {/* Drag handle */}
+                    <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: isCurrentMonth ? 'grab' : 'default', userSelect: 'none' }}>⠿</div>
 
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      {bill.name}
-                      {statusBadge(paidAmt, totalAmt)}
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        {bill.name}
+                        {statusBadge(paidAmt, totalAmt)}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                        <span style={{ background: 'var(--border-light)', borderRadius: 4, padding: '1px 8px' }}>{normalizeBillCategory(bill.category)}</span>
+                        {bill.type === 'one-time' && bill.month && (
+                          <span style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', borderRadius: 4, padding: '1px 8px', fontWeight: 600 }}>{formatMonth(bill.month)}</span>
+                        )}
+                        {paidAmt > 0 && paidAmt < totalAmt && (
+                          <span style={{ color: '#f59e0b' }}>Paid AED {paidAmt.toLocaleString()} of {totalAmt.toLocaleString()}</span>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <span style={{ background: 'var(--border-light)', borderRadius: 4, padding: '1px 8px' }}>{bill.category || 'Other'}</span>
-                      {bill.type === 'one-time' && bill.month && (
-                        <span style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', borderRadius: 4, padding: '1px 8px', fontWeight: 600 }}>{formatMonth(bill.month)}</span>
-                      )}
-                      {paidAmt > 0 && paidAmt < totalAmt && (
-                        <span style={{ color: '#f59e0b' }}>Paid AED {paidAmt.toLocaleString()} of {totalAmt.toLocaleString()}</span>
-                      )}
-                    </div>
-                  </div>
 
-                  {/* Inline partial payment editor */}
-                  {isEditingThisPayment ? (
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
-                      <input
-                        autoFocus
-                        type="number"
-                        min="0"
-                        max={totalAmt}
-                        value={paymentDraft}
-                        onChange={e => setPaymentDraft(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') savePaymentDraft(bill); if (e.key === 'Escape') setEditingPaymentId(null); }}
-                        style={{ width: 100, padding: '5px 10px', borderRadius: 6, border: '1.5px solid var(--primary)', background: 'var(--input-bg)', color: 'inherit', fontFamily: 'inherit', fontSize: 13, outline: 'none' }}
-                        placeholder="0.00"
-                      />
-                      <button onClick={() => savePaymentDraft(bill)} style={{ padding: '5px 10px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit' }}>✓</button>
-                      <button onClick={() => setEditingPaymentId(null)} style={{ padding: '5px 8px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontFamily: 'inherit' }}>✕</button>
+                    {/* Total | Paid | Pending — always visible per bill */}
+                    <div style={{ display: 'flex', gap: 16, flexShrink: 0, textAlign: 'right' }}>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Total</div>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: section.color }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Paid</div>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: '#10b981' }}>AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Pending</div>
+                        <div style={{ fontWeight: 700, fontSize: 15, color: pendingAmt > 0 ? '#ef4444' : '#10b981' }}>AED {pendingAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                      </div>
                     </div>
-                  ) : (
-                    <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 15, color: section.color }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                      {paidAmt > 0 && (
-                        <div style={{ fontSize: 11, color: '#10b981', marginTop: 2 }}>✓ Paid AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                      )}
-                    </div>
-                  )}
 
-                  {/* Action buttons */}
-                  {!isEditingThisPayment && (
-                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                    {/* Action buttons */}
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0, flexWrap: 'wrap' }}>
+                      {onViewLogs && (
+                        <button
+                          onClick={() => onViewLogs(bill.id)}
+                          title="Open this bill's payment history in Bill Logs"
+                          style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#6366f1', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                        >
+                          Logs{logCount > 0 ? ` (${logCount})` : ''}
+                        </button>
+                      )}
                       {isCurrentMonth && status !== 'paid' && (
                         <>
                           <button
                             onClick={() => handleMarkPaid(bill)}
-                            title="Mark as Fully Paid"
+                            title="Mark as Fully Paid (adds a payment log for the remaining amount)"
                             style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#10b981', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
                           >
                             Mark Paid
                           </button>
                           <button
-                            onClick={() => startEditPayment(bill)}
-                            title="Enter partial payment"
+                            onClick={() => startAddPayment(bill)}
+                            title="Record a partial payment (adds to Paid, keeps a log)"
                             style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#f59e0b', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
                           >
                             Partial
@@ -478,7 +515,7 @@ export default function BillsView({
                       {isCurrentMonth && status === 'paid' && (
                         <button
                           onClick={() => handleMarkUnpaid(bill)}
-                          title="Mark as Unpaid"
+                          title="Undo the last payment for this bill"
                           style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#ef4444', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
                         >
                           Undo
@@ -486,15 +523,68 @@ export default function BillsView({
                       )}
                       {isCurrentMonth && (
                         <>
-                          <button onClick={() => handleEdit(bill)} title="Edit" style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: 'var(--text-mid)', display: 'flex', alignItems: 'center' }}>
+                          <button onClick={() => handleEdit(bill)} title="Edit this bill (inline, right here)" style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: 'var(--text-mid)', display: 'flex', alignItems: 'center' }}>
                             <Icon name="edit" size={12} />
                           </button>
-                          <button onClick={() => { if (window.confirm(`Delete "${bill.name}"?`)) onDelete(bill.id); }} title="Delete" style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: '5px 8px', fontSize: 18, lineHeight: 1 }}>×</button>
+                          <button onClick={() => { if (window.confirm(`Delete "${bill.name}"? Its payment logs will be removed too.`)) onDelete(bill.id); }} title="Delete" style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: '5px 8px', fontSize: 18, lineHeight: 1 }}>×</button>
                         </>
                       )}
                     </div>
+                  </div>
+
+                  {/* Inline edit panel — directly under this bill's row */}
+                  {isEditingThisBill && (
+                    <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderTop: 'none', borderRadius: '0 0 12px 12px', padding: '18px 20px', marginBottom: 8, boxShadow: 'var(--shadow-md)' }}>
+                      <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 14 }}>
+                        ✏️ Edit Bill — {bill.name}
+                      </div>
+                      {formFields(editForm, setEditForm)}
+                      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                        <button onClick={() => setEditingBillId(null)} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+                        <button onClick={handleEditSave} style={{ padding: '9px 20px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
+                          Update Bill
+                        </button>
+                      </div>
+                    </div>
                   )}
-                </div>
+
+                  {/* Inline partial-payment panel — directly under this bill's row */}
+                  {isAddingPayment && (
+                    <div style={{ background: 'var(--card)', border: '1.5px solid #f59e0b', borderTop: 'none', borderRadius: '0 0 12px 12px', padding: '18px 20px', marginBottom: 8, boxShadow: 'var(--shadow-md)' }}>
+                      <div style={{ fontSize: 12, color: '#f59e0b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 6 }}>
+                        💰 Record a Payment — {bill.name}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-light)', marginBottom: 14 }}>
+                        This ADDS to Paid (AED {paidAmt.toLocaleString()} paid so far, AED {pendingAmt.toLocaleString()} still pending) and writes a log entry — it does not replace the paid total.
+                      </div>
+                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
+                        <div>
+                          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
+                          <input
+                            autoFocus
+                            className="form-input"
+                            type="number" min="0" max={pendingAmt}
+                            value={paymentAmount}
+                            onChange={e => setPaymentAmount(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') saveAddPayment(bill); if (e.key === 'Escape') setPaymentBillId(null); }}
+                            placeholder="0.00"
+                            style={{ width: 160 }}
+                          />
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Payment Date</div>
+                          <input className="form-input" type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)} style={{ width: 170 }} />
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                        <button onClick={() => setPaymentBillId(null)} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
+                        <button onClick={() => saveAddPayment(bill)} style={{ padding: '9px 20px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
+                          Save Payment
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </React.Fragment>
               );
             })}
           </div>
