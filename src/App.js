@@ -9,14 +9,15 @@ import SalariesView from './components/SalariesView';
 import LoginView from './components/LoginView';
 import EmployeesView from './components/EmployeesView';
 import BillsView from './components/BillsView';
-import ExpensesView from './components/ExpensesView';
+import BillLogsView from './components/BillLogsView';
+// import ExpensesView from './components/ExpensesView'; // COMMENTED OUT — Expenses section hidden (18 Nov 2026, see nav below)
 import { ReportsView } from './components/ClientsReports';
 import ClientsView from './components/ClientsView';
 // import PersonalView from './components/PersonalView';
 import UrgentSalariesPanel from './components/UrgentSalariesPanel';
 import AssistantPanel from './components/AssistantPanel';
-import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue, localDateStr } from './utils/helpers';
-import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, saveExpenses, savePersonalPayments, saveBillPayments, getSession, onAuthChange, signOut } from './api';
+import { today, createFinanceRecord, rolloverMonth, rolloverSalariesMonth, currentYM, extractSalariesFromInvoice, getNextMonthDate, nextYM, hasMonthlyInstallment, isInvoiceOverdue, localDateStr, normalizeBillCategory, billPaymentLogsToTotals, migrateBillPaymentsToLogs } from './utils/helpers';
+import { fetchAllData, upsertClient, deleteClient, upsertInvoice, deleteInvoice, upsertFinance, deleteFinance, upsertSalaries, deleteSalary, updateSetting, upsertEmployee, deleteEmployee, saveMiscBills, saveExpenses, savePersonalPayments, saveBillPaymentLogs, getSession, onAuthChange, signOut } from './api';
 // Using PNG logo from public/logo_2.png
 
 const VIEWS = {
@@ -30,6 +31,7 @@ const VIEWS = {
   SALARIES: 'salaries',
   EMPLOYEES: 'employees',
   BILLS: 'bills',
+  BILL_LOGS: 'bill-logs',
   EXPENSES: 'expenses',
   PERSONAL: 'personal',
 };
@@ -43,7 +45,7 @@ const addDaysStr = (dateStr, days) => {
 const VIEW_TITLES = {
   dashboard: 'Dashboard', create: 'New Invoice', history: 'Invoices', clients: 'Clients',
   preview: 'Invoice', reports: 'Reports', finance: 'Finance', salaries: 'Salaries',
-  employees: 'Employees', bills: 'Payments', expenses: 'Expenses', personal: 'Personal',
+  employees: 'Employees', bills: 'Payments', 'bill-logs': 'Bill Logs', expenses: 'Expenses', personal: 'Personal',
 };
 
 export default function App() {
@@ -56,7 +58,13 @@ export default function App() {
   const [bills, setBills] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [billSections, setBillSections] = useState([]);
-  const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } }
+  const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } } — always DERIVED from billPaymentLogs below
+  // Bill payment logs: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
+  // This is the source of truth for what was paid. Paid = sum of logs, so a
+  // partial payment adds a log instead of overwriting a total, and renames
+  // propagate because logs are keyed by bill.id (they never store the name).
+  const [billPaymentLogs, setBillPaymentLogs] = useState({});
+  const [billLogsFocus, setBillLogsFocus] = useState(null); // bill id to expand in Bill Logs
   // eslint-disable-next-line no-unused-vars
   const [personal, setPersonal] = useState({ allahPaid: 0, savedAmount: 0 });
   const [nextNum, setNextNum] = useState(4001);
@@ -152,25 +160,55 @@ export default function App() {
         setExpenses(db.expenses || []);
         setBillSections(db.billSections || []);
 
-        // Load month-wise payments. Migrate legacy paidAmount from bill templates into current month.
-        let loadedPayments = db.billPayments || {};
+        // Load bill payment LOGS. Paid totals are derived from logs, so
+        // Dashboard / Reports (which read billPayments) keep working.
+        // One-time migrations, both preserving paid history:
+        //  (a) old month totals (misc_bill_payments) become one "Opening
+        //      balance" log per bill/month — no paid amount is lost;
+        //  (b) legacy paidAmount on monthly bill templates becomes a log
+        //      in the current month, then is stripped from the template.
+        // Categories are also normalised to Personal / Business / Loan
+        // ('Private' and 'Other' become Personal).
         const thisMonthKey = currentYM();
+        let loadedLogs = db.billPaymentLogs || {};
+        let logsMigrated = false;
+        if (Object.keys(loadedLogs).length === 0 && db.billPayments && Object.keys(db.billPayments).length > 0) {
+          loadedLogs = migrateBillPaymentsToLogs(db.billPayments);
+          logsMigrated = true;
+        }
         const legacyBills = (db.bills || []).filter(b => b.type === 'monthly' && Number(b.paidAmount) > 0);
-        if (legacyBills.length > 0 && !loadedPayments[thisMonthKey]) {
-          const migrated = { ...loadedPayments };
+        if (legacyBills.length > 0) {
+          const migrated = JSON.parse(JSON.stringify(loadedLogs));
           migrated[thisMonthKey] = migrated[thisMonthKey] || {};
           legacyBills.forEach(b => {
-            if (!migrated[thisMonthKey][b.id]) {
-              migrated[thisMonthKey][b.id] = Number(b.paidAmount);
+            if (!(migrated[thisMonthKey][b.id] || []).length) {
+              migrated[thisMonthKey][b.id] = [{
+                id: `log-migrated-paid-${b.id}`,
+                amount: Number(b.paidAmount),
+                date: `${thisMonthKey}-01`,
+                kind: 'payment',
+                note: 'Opening balance — migrated from bill record',
+              }];
             }
           });
-          loadedPayments = migrated;
-          // Strip paidAmount from templates so they're clean
-          const cleanBills = (db.bills || []).map(b => { const { paidAmount, ...rest } = b; return rest; });
-          setBills(cleanBills);
-          persist(Promise.all([saveMiscBills(cleanBills), saveBillPayments(loadedPayments)]), 'Migrating bill payments');
+          loadedLogs = migrated;
+          logsMigrated = true;
         }
-        setBillPayments(loadedPayments);
+        // Strip paidAmount from templates + normalise categories, so they're clean
+        const cleanBills = (db.bills || []).map(b => {
+          const { paidAmount, ...rest } = b;
+          return { ...rest, category: normalizeBillCategory(b.category) };
+        });
+        const billsChanged = JSON.stringify(cleanBills) !== JSON.stringify(db.bills || []);
+        if (billsChanged) setBills(cleanBills);
+        if (logsMigrated || billsChanged) {
+          const writes = [];
+          if (billsChanged) writes.push(saveMiscBills(cleanBills));
+          if (logsMigrated) writes.push(saveBillPaymentLogs(loadedLogs));
+          persist(Promise.all(writes), 'Migrating bill payments');
+        }
+        setBillPaymentLogs(loadedLogs);
+        setBillPayments(billPaymentLogsToTotals(loadedLogs));
         setUrgentSalaryIds(db.urgentSalaryIds || []);
         if (db.personal) setPersonal(db.personal);
 
@@ -381,11 +419,54 @@ export default function App() {
     persist(updateSetting('misc_bill_sections', JSON.stringify(v)), 'Saving bill sections');
   }, [persist]);
 
-  const saveBillPaymentsState = useCallback(async (v) => {
-    setBillPayments(v);
-    try { await saveBillPayments(v); }
+  // Single write path for bill payment logs. billPayments (the month totals
+  // Dashboard / Reports read) is always re-derived from the logs, so the
+  // two can never drift apart.
+  const saveBillPaymentLogsState = useCallback(async (v) => {
+    setBillPaymentLogs(v);
+    setBillPayments(billPaymentLogsToTotals(v));
+    try { await saveBillPaymentLogs(v); }
     catch (err) { showToast('Failed to save bill payments!', 'error'); }
   }, [showToast]);
+
+  // Record a payment: appends one log entry (partial or full). Paid for the
+  // bill/month grows by the amount; nothing is overwritten.
+  const handleAddBillPayment = useCallback((month, billId, amount, date, kind) => {
+    const entry = {
+      id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      amount: Number(amount) || 0,
+      date: date || localDateStr(new Date()),
+      kind: kind || 'partial',
+      note: '',
+    };
+    const monthLogs = { ...(billPaymentLogs[month] || {}) };
+    monthLogs[billId] = [...(monthLogs[billId] || []), entry];
+    saveBillPaymentLogsState({ ...billPaymentLogs, [month]: monthLogs });
+    showToast(`Payment of AED ${entry.amount.toLocaleString()} recorded`);
+  }, [billPaymentLogs, saveBillPaymentLogsState, showToast]);
+
+  // Undo removes ONLY the last payment log for that bill/month — earlier
+  // partial payments stay in the history.
+  const handleUndoLastBillPayment = useCallback((month, billId) => {
+    const entries = [...((billPaymentLogs[month] || {})[billId] || [])];
+    if (!entries.length) return;
+    entries.pop();
+    const monthLogs = { ...(billPaymentLogs[month] || {}) };
+    if (entries.length) monthLogs[billId] = entries;
+    else delete monthLogs[billId];
+    saveBillPaymentLogsState({ ...billPaymentLogs, [month]: monthLogs });
+    showToast('Last payment undone');
+  }, [billPaymentLogs, saveBillPaymentLogsState, showToast]);
+
+  // Delete one specific log entry (from Bill Logs).
+  const handleDeleteBillPaymentLog = useCallback((month, billId, logId) => {
+    const entries = ((billPaymentLogs[month] || {})[billId] || []).filter(e => e.id !== logId);
+    const monthLogs = { ...(billPaymentLogs[month] || {}) };
+    if (entries.length) monthLogs[billId] = entries;
+    else delete monthLogs[billId];
+    saveBillPaymentLogsState({ ...billPaymentLogs, [month]: monthLogs });
+    showToast('Payment log removed', 'error');
+  }, [billPaymentLogs, saveBillPaymentLogsState, showToast]);
 
   // eslint-disable-next-line no-unused-vars
   const savePersonalState = useCallback(async (v) => {
@@ -398,8 +479,18 @@ export default function App() {
     const updated = bills.filter(b => b.id !== id);
     setBills(updated);
     persist(saveMiscBills(updated), 'Deleting bill');
+    // A deleted bill takes its payment logs with it — logs are keyed by
+    // bill id, so there is no orphaned history left behind.
+    const prunedLogs = {};
+    Object.entries(billPaymentLogs).forEach(([month, byBill]) => {
+      const { [id]: _removed, ...rest } = byBill || {};
+      if (Object.keys(rest).length) prunedLogs[month] = rest;
+    });
+    if (JSON.stringify(prunedLogs) !== JSON.stringify(billPaymentLogs)) {
+      saveBillPaymentLogsState(prunedLogs);
+    }
     showToast('Bill removed', 'error');
-  }, [bills, persist, showToast]);
+  }, [bills, billPaymentLogs, persist, saveBillPaymentLogsState, showToast]);
 
   const handleDeleteEmployee = useCallback((id) => {
     setEmployees(prev => prev.filter(e => e.id !== id));
@@ -498,7 +589,11 @@ export default function App() {
       // Bills, bill payments and expenses are saved as whole lists, so the UI must
       // hold the assistant's version or its next save would undo the change
       setBills(db.bills || []);
-      setBillPayments(db.billPayments || {});
+      const refreshedLogs = db.billPaymentLogs || {};
+      setBillPaymentLogs(refreshedLogs);
+      // Paid totals are derived from logs; fall back to the legacy totals
+      // only if no logs exist yet (pre-migration data).
+      setBillPayments(Object.keys(refreshedLogs).length ? billPaymentLogsToTotals(refreshedLogs) : (db.billPayments || {}));
       setExpenses(db.expenses || []);
       setUrgentSalaryIds(db.urgentSalaryIds || []);
     } catch (err) {
@@ -784,8 +879,8 @@ export default function App() {
   const todayStr = today();
   const overdueCount = invoices.filter(i => isInvoiceOverdue(i, todayStr)).length;
   const thisYM = currentYM();
-  // Overdue or due within 7 days
-  const expenseAlertCount = expenses.filter(e => e.status !== 'paid' && e.dueDate && e.dueDate <= addDaysStr(todayStr, 7)).length;
+  // Expenses section is commented out (18 Nov 2026) — see nav below.
+  // const expenseAlertCount = expenses.filter(e => e.status !== 'paid' && e.dueDate && e.dueDate <= addDaysStr(todayStr, 7)).length;
   const unpaidSalaryCount = salaries.filter(s => s.month <= thisYM && s.status !== 'paid' && s.status !== 'pushed').length;
 
   // Nav items
@@ -822,7 +917,8 @@ export default function App() {
       title: 'MISC PAYMENTS',
       items: [
         { id: VIEWS.BILLS, label: 'Payments', icon: 'receipt' },
-        { id: VIEWS.EXPENSES, label: 'Expenses', icon: 'briefcase', badge: expenseAlertCount, badgeTitle: 'Expenses overdue or due within 7 days' },
+        { id: VIEWS.BILL_LOGS, label: 'Bill Logs', icon: 'file-text' },
+        // { id: VIEWS.EXPENSES, label: 'Expenses', icon: 'briefcase', badge: expenseAlertCount, badgeTitle: 'Expenses overdue or due within 7 days' }, // COMMENTED OUT — Expenses section hidden 18 Nov 2026; data is kept, nothing deleted
         // { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' }, // COMMENTED OUT
       ]
     }
@@ -1081,15 +1177,17 @@ export default function App() {
             <ReportsView invoices={invoices} clients={clients} salaries={salaries} bills={bills} billPayments={billPayments} expenses={expenses} />
           )}
 
+          {/* Expenses section commented out — hidden from the sidebar 18 Nov 2026; data is kept
           {view === VIEWS.EXPENSES && (
             <ExpensesView expenses={expenses} onSave={saveExpensesState} onNotify={showToast} />
           )}
+          */}
 
           {view === VIEWS.BILLS && (
             <BillsView
               bills={bills}
               sections={billSections}
-              billPayments={billPayments}
+              billPaymentLogs={billPaymentLogs}
               onUpdateSections={saveBillSectionsState}
               onAdd={(bill) => saveBills([bill, ...bills])}
               onUpdate={(id, patch) => {
@@ -1098,13 +1196,20 @@ export default function App() {
               }}
               onDelete={handleDeleteBill}
               onReorder={(updatedBills) => saveBills(updatedBills)}
-              onPaymentUpdate={(month, billId, paidAmt) => {
-                const updated = {
-                  ...billPayments,
-                  [month]: { ...(billPayments[month] || {}), [billId]: paidAmt },
-                };
-                saveBillPaymentsState(updated);
-              }}
+              onAddPayment={handleAddBillPayment}
+              onUndoLastPayment={handleUndoLastBillPayment}
+              onViewLogs={(billId) => { setBillLogsFocus(billId || null); setView(VIEWS.BILL_LOGS); }}
+            />
+          )}
+
+          {view === VIEWS.BILL_LOGS && (
+            <BillLogsView
+              bills={bills}
+              billPaymentLogs={billPaymentLogs}
+              focusBillId={billLogsFocus}
+              onFocusBillChange={setBillLogsFocus}
+              onDeleteLog={handleDeleteBillPaymentLog}
+              onBack={() => setView(VIEWS.BILLS)}
             />
           )}
 
