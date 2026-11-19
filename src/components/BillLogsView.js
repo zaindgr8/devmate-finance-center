@@ -5,7 +5,7 @@ import { currentYM, fmtMonth, normalizeBillCategory, sumBillLogs, billLogsFor, B
 //
 // One rule makes renames work everywhere: logs are keyed by bill.id and
 // never store the bill name. This view reads the name from the bill record
-// itself, so editing a name in Payments renames it here automatically.
+// itself, so editing a name in Accounts renames it here automatically.
 // A bill's Paid amount is always the sum of its logs; Pending = Total - Paid.
 export default function BillLogsView({
   bills = [],
@@ -78,7 +78,7 @@ export default function BillLogsView({
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Bill Logs</h1>
           <div style={{ fontSize: 13, color: 'var(--text-light)' }}>
-            Payment history by bill · each title opens its logs. Logs are linked to the bill, not its name — rename a bill in Payments and it updates here too.
+            Payment history by bill · each title opens its logs. Logs are linked to the bill, not its name — rename a bill in Accounts and it updates here too.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -100,7 +100,7 @@ export default function BillLogsView({
             ))}
           </select>
           {onBack && (
-            <button onClick={onBack} className="btn btn-ghost btn-md" title="Back to Payments">← Payments</button>
+            <button onClick={onBack} className="btn btn-ghost btn-md" title="Back to Accounts">← Accounts</button>
           )}
         </div>
       </div>
@@ -124,7 +124,7 @@ export default function BillLogsView({
         <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-light)', background: 'var(--card)', borderRadius: 16, border: '1px solid var(--border)' }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>📒</div>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>No bills match</div>
-          <div style={{ fontSize: 13 }}>Try a different search or category — or add a bill from Payments first.</div>
+          <div style={{ fontSize: 13 }}>Try a different search or category — or add a bill from Accounts first.</div>
         </div>
       )}
 
