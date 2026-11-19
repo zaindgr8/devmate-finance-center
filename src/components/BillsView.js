@@ -243,17 +243,6 @@ export default function BillsView({
     updateSections(activeSections.filter(s => s.id !== sectionId));
   };
 
-  const statusBadge = (paidAmt, totalAmt) => {
-    const st = getBillStatus(paidAmt, totalAmt);
-    const map = {
-      paid: { bg: 'rgba(16,185,129,0.12)', color: '#10b981', label: '✓ Paid' },
-      partial: { bg: 'rgba(245,158,11,0.12)', color: '#f59e0b', label: '◑ Partial' },
-      pending: { bg: 'rgba(239,68,68,0.1)', color: '#ef4444', label: '● Pending' },
-    };
-    const s = map[st];
-    return <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 6, padding: '3px 10px', background: s.bg, color: s.color, whiteSpace: 'nowrap' }}>{s.label}</span>;
-  };
-
   const cardStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 20px', boxShadow: 'var(--shadow)' };
 
   const formatMonth = fmtMonth;
@@ -493,35 +482,20 @@ export default function BillsView({
                     <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: isCurrentMonth ? 'grab' : 'default', userSelect: 'none' }}>⠿</div>
 
                     <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>
                         {bill.name}
-                        {statusBadge(paidAmt, totalAmt)}
                       </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-light)', marginTop: 4, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                        <span style={{ background: 'var(--border-light)', borderRadius: 4, padding: '1px 8px' }}>{normalizeBillCategory(bill.category)}</span>
-                        {bill.type === 'one-time' && bill.month && (
-                          <span style={{ background: 'rgba(245,158,11,0.1)', color: '#f59e0b', borderRadius: 4, padding: '1px 8px', fontWeight: 600 }}>{formatMonth(bill.month)}</span>
-                        )}
-                        {paidAmt > 0 && paidAmt < totalAmt && (
-                          <span style={{ color: '#f59e0b' }}>Paid AED {paidAmt.toLocaleString()} of {totalAmt.toLocaleString()}</span>
-                        )}
-                      </div>
+                      {bill.type === 'one-time' && bill.month && (
+                        <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4, fontWeight: 600 }}>{formatMonth(bill.month)}</div>
+                      )}
                     </div>
 
-                    {/* Total | Paid | Pending — always visible per bill */}
-                    <div style={{ display: 'flex', gap: 16, flexShrink: 0, textAlign: 'right' }}>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Total</div>
-                        <div style={{ fontWeight: 700, fontSize: 15, color: section.color }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Paid</div>
-                        <div style={{ fontWeight: 700, fontSize: 15, color: '#10b981' }}>AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1 }}>Pending</div>
-                        <div style={{ fontWeight: 700, fontSize: 15, color: pendingAmt > 0 ? '#ef4444' : '#10b981' }}>AED {pendingAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-                      </div>
+                    {/* Total (red) · Pending (yellow) | Paid (green) */}
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexShrink: 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: 15, color: '#ef4444', whiteSpace: 'nowrap' }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      <span style={{ fontWeight: 700, fontSize: 15, color: '#f59e0b', whiteSpace: 'nowrap' }}>AED {pendingAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      <span style={{ color: 'var(--border)', fontSize: 14 }}>|</span>
+                      <span style={{ fontWeight: 700, fontSize: 15, color: '#10b981', whiteSpace: 'nowrap' }}>AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
                     </div>
 
                     {/* Action buttons */}
