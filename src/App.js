@@ -923,7 +923,7 @@ export default function App() {
     {
       title: 'MISC PAYMENTS',
       items: [
-        { id: VIEWS.BILLS, label: 'Payments', icon: 'receipt' },
+        { id: VIEWS.BILLS, label: 'Accounts', icon: 'receipt' },
         { id: VIEWS.BILL_LOGS, label: 'Bill Logs', icon: 'file-text' },
         // { id: VIEWS.EXPENSES, label: 'Expenses', icon: 'briefcase', badge: expenseAlertCount, badgeTitle: 'Expenses overdue or due within 7 days' }, // COMMENTED OUT — Expenses section hidden 18 Nov 2026; data is kept, nothing deleted
         // { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' }, // COMMENTED OUT

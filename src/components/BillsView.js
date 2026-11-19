@@ -284,7 +284,7 @@ export default function BillsView({
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Misc Payments</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Accounts</h1>
           <div style={{ fontSize: 13, color: 'var(--text-light)' }}>Regular bills &amp; expenses · deducted from net profit</div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -520,10 +520,10 @@ export default function BillsView({
                           </button>
                           <button
                             onClick={() => startAddPayment(bill)}
-                            title="Record a partial payment (adds to Paid, keeps a log)"
-                            style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#f59e0b', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                            title="Add a payment — adds to Paid and keeps a log"
+                            style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#f59e0b', fontSize: 14, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap', lineHeight: 1 }}
                           >
-                            Partial
+                            +
                           </button>
                         </>
                       )}
