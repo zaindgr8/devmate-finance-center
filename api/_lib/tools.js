@@ -265,8 +265,7 @@ async function listSalaries(db, args) {
 async function listBills(db, args) {
   const month = args.month || currentYM();
   const bills = await getSetting(db, 'misc_bills', []);
-  const payments = await getSetting(db, 'misc_bill_payments', {});
-  const paidMap = (payments && payments[month]) || {};
+  const logs = await getSetting(db, 'misc_bill_payment_logs', {});
   const forMonth = (Array.isArray(bills) ? bills : []).filter((b) => {
     if (b.type === 'one-time') return b.month === month;
     const since = (b.created_at || '').slice(0, 7);
@@ -275,8 +274,15 @@ async function listBills(db, args) {
   return {
     month,
     bills: forMonth.map((b) => {
-      const paid = Math.min(num(paidMap[b.id]), num(b.amount));
-      return { id: b.id, name: b.name, amount: num(b.amount), section: b.type, category: b.category, paid, status: paid >= num(b.amount) ? 'paid' : paid > 0 ? 'partial' : 'unpaid' };
+      const entries = billLogEntries(logs, month, b.id);
+      const paid = round2(entries.reduce((s, e) => s + num(e.amount), 0));
+      const total = num(b.amount);
+      return {
+        id: b.id, name: b.name, total, paid, pending: Math.max(0, round2(total - paid)),
+        type: b.type === 'one-time' ? 'one-time' : 'monthly', category: normalizeBillCategory(b.category),
+        status: paid >= total && total > 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid',
+        payments: entries.map((e) => ({ date: e.date, amount: num(e.amount), note: e.note || undefined })),
+      };
     }),
   };
 }
@@ -728,6 +734,20 @@ async function deleteSalary(db, args) {
 }
 
 /* ── bills (stored as JSON in app_settings.misc_bills) ─────── */
+// Payments are LOGS in app_settings.misc_bill_payment_logs:
+//   { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note, billTotal, billName, recordedAt }] } }
+// keyed by bill id (never name), exactly as the Payments page writes them.
+// Paid for a month = sum of that month's logs.
+
+// Shown to users as Personal, Business, House, Loan & Dues (stored as below)
+const BILL_GROUPS4 = ['Personal', 'Business', 'House', 'Loan & Dues'];
+function normalizeBillCategory(cat) {
+  if (cat === 'Company' || cat === 'Business') return 'Company';
+  if (cat === 'House') return 'House';
+  if (cat === 'Dues' || cat === 'Loan' || cat === 'Loan & Dues') return 'Dues';
+  return 'Personal';
+}
+const billLogEntries = (logs, month, billId) => (((logs || {})[month] || {})[billId]) || [];
 
 function pickOne(list, args, idKey, nameKey, label) {
   if (args[idKey]) {
@@ -753,14 +773,14 @@ async function addBill(db, args) {
   if (amount <= 0) throw new Error('amount must be above zero');
   const bills = await getSetting(db, 'misc_bills', []);
   const list = Array.isArray(bills) ? bills : [];
-  const type = args.type || 'monthly';
+  const type = args.type === 'one-time' ? 'one-time' : 'monthly';
   const bill = {
     name,
     amount,
     type,
-    category: args.category || 'Other',
+    category: normalizeBillCategory(args.category),
     month: args.month || currentYM(),
-    order: list.filter((b) => b.type === type).length,
+    order: list.reduce((m, b) => Math.max(m, b.order ?? -1), -1) + 1,
     id: uid('bill'),
     created_at: new Date().toISOString(),
   };
@@ -775,7 +795,9 @@ async function updateBill(db, args) {
   const patch = {};
   if (args.new_name != null) patch.name = String(args.new_name).trim();
   if (args.amount != null) patch.amount = num(args.amount);
-  ['type', 'category', 'month'].forEach((k) => { if (args[k] != null) patch[k] = String(args[k]); });
+  if (args.type != null) patch.type = args.type === 'one-time' ? 'one-time' : 'monthly';
+  if (args.category != null) patch.category = normalizeBillCategory(args.category);
+  if (args.month != null) patch.month = String(args.month);
   if (!Object.keys(patch).length) return { error: 'Nothing to change' };
   await setSetting(db, 'misc_bills', list.map((b) => (b.id === bill.id ? { ...b, ...patch } : b)));
   return { updated: { id: bill.id, ...patch } };
@@ -786,20 +808,58 @@ async function payBill(db, args) {
   const list = Array.isArray(bills) ? bills : [];
   const bill = pickOne(list, args, 'bill_id', 'name', 'Bill');
   const month = args.month || currentYM();
-  const amount = args.amount != null ? num(args.amount) : num(bill.amount); // 0 marks it unpaid
-  const payments = await getSetting(db, 'misc_bill_payments', {});
-  const next = { ...(payments || {}), [month]: { ...((payments || {})[month] || {}), [bill.id]: amount } };
-  await setSetting(db, 'misc_bill_payments', next);
-  return { bill: bill.name, month, paid: amount, of: num(bill.amount), status: amount >= num(bill.amount) ? 'paid' : amount > 0 ? 'partial' : 'unpaid' };
+  const logs = (await getSetting(db, 'misc_bill_payment_logs', {})) || {};
+  const entries = [...billLogEntries(logs, month, bill.id)];
+  const total = num(bill.amount);
+  const paidBefore = round2(entries.reduce((s, e) => s + num(e.amount), 0));
+
+  // Undo removes only the last payment, like the Undo on the Payments page
+  if (args.undo_last) {
+    if (!entries.length) return { error: `No payments to undo for "${bill.name}" in ${month}` };
+    const removed = entries.pop();
+    const monthLogs = { ...(logs[month] || {}) };
+    if (entries.length) monthLogs[bill.id] = entries; else delete monthLogs[bill.id];
+    await setSetting(db, 'misc_bill_payment_logs', { ...logs, [month]: monthLogs });
+    return { undone: { bill: bill.name, month, amount: num(removed.amount) }, paidNow: round2(paidBefore - num(removed.amount)), of: total };
+  }
+
+  const due = Math.max(0, round2(total - paidBefore));
+  if (due <= 0) return { error: `"${bill.name}" is already fully paid for ${month}` };
+  const amount = args.amount != null ? num(args.amount) : due;
+  if (amount <= 0) throw new Error('amount must be above zero');
+  if (amount > due + 0.001) return { error: `Only ${due} AED is pending for "${bill.name}" in ${month}` };
+
+  const entry = {
+    id: uid('log'),
+    amount: round2(amount),
+    date: args.date || localDate(),
+    kind: amount >= due ? 'full' : 'partial',
+    note: args.note || '',
+    billTotal: total,
+    billName: bill.name,
+    recordedAt: new Date().toISOString(),
+  };
+  const monthLogs = { ...(logs[month] || {}), [bill.id]: [...entries, entry] };
+  await setSetting(db, 'misc_bill_payment_logs', { ...logs, [month]: monthLogs });
+  const paidNow = round2(paidBefore + amount);
+  return { payment: { bill: bill.name, month, amount: entry.amount, date: entry.date, paidNow, pending: Math.max(0, round2(total - paidNow)), of: total, status: paidNow >= total ? 'paid' : 'partial' } };
 }
 
 async function deleteBill(db, args) {
   const bills = await getSetting(db, 'misc_bills', []);
   const list = Array.isArray(bills) ? bills : [];
   const bill = pickOne(list, args, 'bill_id', 'name', 'Bill');
-  const gate = needsConfirm(args, `Delete bill "${bill.name}" (${bill.amount})?`);
+  const gate = needsConfirm(args, `Delete bill "${bill.name}" (${bill.amount} AED) and all its payment logs?`);
   if (gate) return gate;
   await setSetting(db, 'misc_bills', list.filter((b) => b.id !== bill.id));
+  // Its payment logs go with it (same as deleting from the Payments page)
+  const logs = (await getSetting(db, 'misc_bill_payment_logs', {})) || {};
+  const pruned = {};
+  Object.entries(logs).forEach(([month, byBill]) => {
+    const { [bill.id]: _gone, ...rest } = byBill || {};
+    if (Object.keys(rest).length) pruned[month] = rest;
+  });
+  await setSetting(db, 'misc_bill_payment_logs', pruned);
   return { deleted: bill.name };
 }
 
@@ -893,7 +953,7 @@ const TOOLS = [
   { name: 'list_clients', description: 'List clients, optionally matching a name.', parameters: obj({ search: S('Partial name') }), run: listClients },
   { name: 'list_employees', description: 'List employees with role, department, base salary and status.', parameters: obj({}), run: listEmployees },
   { name: 'list_salaries', description: 'Salary records with ids. Defaults to the current month.', parameters: obj({ month: S('YYYY-MM'), all_months: { type: 'BOOLEAN', description: 'Every month instead of one' }, employee_name: S('Partial name'), status: S('unpaid, partial, paid or pushed') }), run: listSalaries },
-  { name: 'list_bills', description: 'Bills that apply to a month (default current) with what has been paid.', parameters: obj({ month: S('YYYY-MM') }), run: listBills },
+  { name: 'list_bills', description: 'Bills for a month (default current) with total, paid, pending and each payment made.', parameters: obj({ month: S('YYYY-MM') }), run: listBills },
   { name: 'list_expenses', description: 'Expenses such as fines, renewals and fees. Defaults to the unpaid ones.', parameters: obj({ status: S('open (default), paid or all') }), run: listExpenses },
 
   // clients
@@ -919,9 +979,9 @@ const TOOLS = [
   { name: 'delete_salary', description: 'Delete a salary record. Needs confirmation.', write: true, parameters: obj({ salary_id: S(''), confirm: CONFIRM }, ['salary_id']), run: deleteSalary },
 
   // bills
-  { name: 'add_bill', description: 'Add a bill (rent, internet, etc.) on the Payments page.', write: true, parameters: obj({ name: S(''), amount: N('Amount in AED'), type: S('monthly (default), one-time, or a custom section id'), category: S(''), month: S('YYYY-MM, for one-time bills') }, ['name', 'amount']), run: addBill },
-  { name: 'update_bill', description: 'Edit a bill by id or name.', write: true, parameters: obj({ bill_id: S(''), name: S('Current name'), new_name: S(''), amount: N(''), type: S(''), category: S(''), month: S('YYYY-MM') }), run: updateBill },
-  { name: 'pay_bill', description: 'Set how much of a bill is paid for a month (default current). Without amount, marks it fully paid; amount 0 marks it unpaid.', write: true, parameters: obj({ bill_id: S(''), name: S('Bill name'), amount: N('Total paid for that month'), month: S('YYYY-MM') }), run: payBill },
+  { name: 'add_bill', description: 'Add a bill (rent, internet, a loan, a person to pay...) on the Payments page.', write: true, parameters: obj({ name: S(''), amount: N('Amount in AED'), type: S('monthly (default) or one-time'), category: S(BILL_GROUPS4.join(', ')), month: S('YYYY-MM, for one-time bills') }, ['name', 'amount']), run: addBill },
+  { name: 'update_bill', description: 'Edit or rename a bill by id or name. Payment logs stay attached after a rename.', write: true, parameters: obj({ bill_id: S(''), name: S('Current name'), new_name: S(''), amount: N(''), type: S('monthly or one-time'), category: S(BILL_GROUPS4.join(', ')), month: S('YYYY-MM') }), run: updateBill },
+  { name: 'pay_bill', description: 'Record a payment on a bill for a month (default current). It is saved as a log entry in Bill Logs. Without amount, pays the pending balance in full. undo_last removes the last payment instead.', write: true, parameters: obj({ bill_id: S(''), name: S('Bill name'), amount: N('Amount paid now, in AED'), date: S('YYYY-MM-DD, default today'), note: S('e.g. cash, bank transfer'), month: S('YYYY-MM'), undo_last: { type: 'BOOLEAN', description: 'Remove the last payment instead of adding one' } }), run: payBill },
   { name: 'delete_bill', description: 'Delete a bill. Needs confirmation.', write: true, parameters: obj({ bill_id: S(''), name: S(''), confirm: CONFIRM }), run: deleteBill },
 
   // expenses

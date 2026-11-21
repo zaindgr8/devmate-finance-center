@@ -45,7 +45,7 @@ const addDaysStr = (dateStr, days) => {
 const VIEW_TITLES = {
   dashboard: 'Dashboard', create: 'New Invoice', history: 'Invoices', clients: 'Clients',
   preview: 'Invoice', reports: 'Reports', finance: 'Finance', salaries: 'Salaries',
-  employees: 'Employees', bills: 'Payments', 'bill-logs': 'Bill Logs', expenses: 'Expenses', personal: 'Personal',
+  employees: 'Employees', bills: 'Accounts', 'bill-logs': 'Logs', expenses: 'Expenses', personal: 'Personal',
 };
 
 export default function App() {
@@ -57,7 +57,6 @@ export default function App() {
   const [employees, setEmployees] = useState([]);
   const [bills, setBills] = useState([]);
   const [expenses, setExpenses] = useState([]);
-  const [billSections, setBillSections] = useState([]);
   const [billPayments, setBillPayments] = useState({}); // { "YYYY-MM": { "bill-id": paidAmount } } — always DERIVED from billPaymentLogs below
   // Bill payment logs: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
   // This is the source of truth for what was paid. Paid = sum of logs, so a
@@ -158,7 +157,6 @@ export default function App() {
         setEmployees(db.employees || []);
         setBills(db.bills || []);
         setExpenses(db.expenses || []);
-        setBillSections(db.billSections || []);
 
         // Load bill payment LOGS. Paid totals are derived from logs, so
         // Dashboard / Reports (which read billPayments) keep working.
@@ -421,11 +419,6 @@ export default function App() {
     catch (err) { showToast('Failed to save bills!', 'error'); }
   }, [showToast]);
 
-  const saveBillSectionsState = useCallback(async (v) => {
-    setBillSections(v);
-    persist(updateSetting('misc_bill_sections', JSON.stringify(v)), 'Saving bill sections');
-  }, [persist]);
-
   // Single write path for bill payment logs. billPayments (the month totals
   // Dashboard / Reports read) is always re-derived from the logs, so the
   // two can never drift apart.
@@ -438,13 +431,19 @@ export default function App() {
 
   // Record a payment: appends one log entry (partial or full). Paid for the
   // bill/month grows by the amount; nothing is overwritten.
-  const handleAddBillPayment = useCallback((month, billId, amount, date, kind) => {
+  // The log is keyed by bill id (so a rename never loses history) and keeps a
+  // snapshot of the bill's name and total at the time of payment, so Bill Logs
+  // can show the balance left after each payment even if the bill changes later.
+  const handleAddBillPayment = useCallback((month, billId, amount, date, kind, note = '', snapshot = {}) => {
     const entry = {
       id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       amount: Number(amount) || 0,
       date: date || localDateStr(new Date()),
       kind: kind || 'partial',
-      note: '',
+      note: note || '',
+      ...(snapshot.billTotal != null ? { billTotal: Number(snapshot.billTotal) || 0 } : {}),
+      ...(snapshot.billName ? { billName: snapshot.billName } : {}),
+      recordedAt: new Date().toISOString(),
     };
     const monthLogs = { ...(billPaymentLogs[month] || {}) };
     monthLogs[billId] = [...(monthLogs[billId] || []), entry];
@@ -923,8 +922,8 @@ export default function App() {
     {
       title: 'MISC PAYMENTS',
       items: [
-        { id: VIEWS.BILLS, label: 'Payments', icon: 'receipt' },
-        { id: VIEWS.BILL_LOGS, label: 'Bill Logs', icon: 'file-text' },
+        { id: VIEWS.BILLS, label: 'Accounts', icon: 'receipt' },
+        { id: VIEWS.BILL_LOGS, label: 'Logs', icon: 'file-text' },
         // { id: VIEWS.EXPENSES, label: 'Expenses', icon: 'briefcase', badge: expenseAlertCount, badgeTitle: 'Expenses overdue or due within 7 days' }, // COMMENTED OUT — Expenses section hidden 18 Nov 2026; data is kept, nothing deleted
         // { id: VIEWS.PERSONAL, label: 'Personal', icon: 'user' }, // COMMENTED OUT
       ]
@@ -1193,9 +1192,7 @@ export default function App() {
           {view === VIEWS.BILLS && (
             <BillsView
               bills={bills}
-              sections={billSections}
               billPaymentLogs={billPaymentLogs}
-              onUpdateSections={saveBillSectionsState}
               onAdd={(bill) => saveBills([bill, ...bills])}
               onUpdate={(id, patch) => {
                 const updated = bills.map(b => b.id === id ? { ...b, ...patch } : b);

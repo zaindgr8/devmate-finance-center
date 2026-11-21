@@ -1,631 +1,574 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Icon from './Icon';
+import RecurIcon from './RecurIcon';
 import {
-  currentYM, fmtMonth, billsForMonth, downloadCSV, localDateStr,
-  BILL_CATEGORIES, BILL_GROUPS, normalizeBillCategory,
+  currentYM, fmtMonth, fmtDate, billsForMonth, downloadCSV, localDateStr,
+  BILL_CATEGORIES, BILL_GROUPS, normalizeBillCategory, billCategoryLabel,
   billPaidFromLogs, billLogsFor,
 } from '../utils/helpers';
 
-const DEFAULT_SECTIONS = [
-  { id: 'monthly', label: '🔄 Monthly Bills', color: '#ef4444' },
-  { id: 'one-time', label: '📌 One-Time Expense', color: '#f59e0b' },
+// Accounts (formerly Payments) — one list of bills for the selected month.
+//
+// Every payment is a LOG entry ({ id, amount, date, kind, note, billTotal,
+// billName, recordedAt }) stored under the bill's id, never its name. So a
+// bill (or person) can be renamed freely and keeps all of its payment history.
+// Paid = sum of the month's logs, Pending = Total − Paid.
+//
+// Filters: category (All / Personal / Company / House / Dues), type
+// (All / Monthly / One-time) and sort (Normal = your drag order, Amount ↑/↓).
+
+const TYPE_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'one-time', label: 'One-time' },
+];
+const SORTS = [
+  { id: 'normal', label: 'Normal order' },
+  { id: 'asc', label: 'Amount ↑' },
+  { id: 'desc', label: 'Amount ↓' },
 ];
 
 const EMPTY_FORM = { name: '', amount: '', type: 'monthly', category: 'Personal', month: currentYM() };
+// Anything that isn't one-time recurs monthly (old custom sections included)
+const isOneTime = (b) => b.type === 'one-time';
+const money = (n) => `AED ${(Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-// billPaymentLogs: { "YYYY-MM": { "bill-id": [{ id, amount, date, kind, note }] } }
-// Paid is always the SUM of a bill's logs for that month — a partial payment
-// ADDS a log, it never overwrites a total, so history is never lost.
-function getBillStatus(paidAmt, totalAmt) {
-  if (paidAmt <= 0) return 'pending';
-  if (paidAmt >= totalAmt) return 'paid';
-  return 'partial';
+function usePref(key, initial) {
+  const [val, setVal] = useState(() => {
+    try { const v = localStorage.getItem(key); return v == null ? initial : JSON.parse(v); } catch { return initial; }
+  });
+  const set = (v) => {
+    setVal(v);
+    try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ }
+  };
+  return [val, set];
+}
+
+// ⋯ menu for less frequent actions. An item with `submenu` opens a second
+// list in place (e.g. Category › Personal / Company / House / Dues).
+function RowMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const [sub, setSub] = useState(null); // label of the open submenu
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) { setOpen(false); setSub(null); } };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [open]);
+  const list = items.filter(Boolean);
+  const active = sub && list.find((it) => it.label === sub);
+  const done = (fn) => { setOpen(false); setSub(null); fn(); };
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button className="icon-btn" aria-label="More actions" aria-expanded={open} onClick={() => { setOpen((o) => !o); setSub(null); }} style={{ fontSize: 18 }}>⋯</button>
+      {open && (
+        <div className="row-menu" role="menu">
+          {active ? (
+            <>
+              <button role="menuitem" className="menu-back" onClick={() => setSub(null)}>‹ {active.label}</button>
+              {active.submenu.map((opt) => (
+                <button key={opt.label} role="menuitemradio" aria-checked={!!opt.checked} onClick={() => done(opt.onClick)}>
+                  <span className="menu-check">{opt.checked ? '✓' : ''}</span>{opt.label}
+                </button>
+              ))}
+            </>
+          ) : list.map((it) => (
+            <button
+              key={it.label} role="menuitem" className={it.danger ? 'danger' : ''}
+              aria-haspopup={it.submenu ? 'menu' : undefined}
+              onClick={() => (it.submenu ? setSub(it.label) : done(it.onClick))}
+            >
+              <span style={{ flex: 1 }}>{it.label}</span>
+              {it.submenu && <span className="menu-hint">{it.hint} ›</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function BillsView({
   bills = [],
-  sections: propSections = [],
   billPaymentLogs = {},
-  onUpdateSections,
   onAdd,
   onUpdate,
   onDelete,
   onReorder,
   onAddPayment,
-  onUndoLastPayment,
   onViewLogs,
 }) {
+  const [filterMonth, setFilterMonth] = useState(currentYM());
+  const [groupFilter, setGroupFilter] = usePref('bills_group_filter', 'All');
+  const [typeFilter, setTypeFilter] = usePref('bills_type_filter', 'all');
+  const [sortBy, setSortBy] = usePref('bills_sort', 'normal');
+  const [showPaid, setShowPaid] = usePref('bills_show_paid', false);
+
   const [showAddForm, setShowAddForm] = useState(false);
   const [addForm, setAddForm] = useState(EMPTY_FORM);
-  // Inline edit: the editor renders directly under the bill row being edited,
-  // never at the top of the page.
   const [editingBillId, setEditingBillId] = useState(null);
   const [editForm, setEditForm] = useState(EMPTY_FORM);
-  const [filterMonth, setFilterMonth] = useState(currentYM());
-  // Toggle bar filter — All | Personal | Company | House | Dues.
-  // The toggle IS the category, so filtering and the dropdown never disagree.
-  const [groupFilter, setGroupFilter] = useState('All');
-  const [editSectionId, setEditSectionId] = useState(null);
-  const [editSectionLabel, setEditSectionLabel] = useState('');
-  const [showAddSection, setShowAddSection] = useState(false);
-  const [newSectionLabel, setNewSectionLabel] = useState('');
+  const [payingBillId, setPayingBillId] = useState(null);
+  const [payForm, setPayForm] = useState({ amount: '', date: localDateStr(new Date()), note: '' });
+  // Inline edit of a bill's Total (double-click the amount)
+  const [totalEditId, setTotalEditId] = useState(null);
+  const [totalDraft, setTotalDraft] = useState('');
+  const cancelTotalRef = useRef(false);
   const [dragBillId, setDragBillId] = useState(null);
   const [dragOverBillId, setDragOverBillId] = useState(null);
-  const [dragSectionId, setDragSectionId] = useState(null);
-  // Inline "add a payment" panel (partial or full) — also under the bill row
-  const [paymentBillId, setPaymentBillId] = useState(null);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentDate, setPaymentDate] = useState(localDateStr(new Date()));
 
   const isCurrentMonth = filterMonth === currentYM();
 
-  // Sections fallback (seed the DB once, outside render)
-  const hasSections = propSections && propSections.length > 0;
-  let activeSections = propSections;
-  if (!hasSections) {
-    try {
-      const s = localStorage.getItem('misc_bill_sections');
-      activeSections = s ? JSON.parse(s) : DEFAULT_SECTIONS;
-    } catch {
-      activeSections = DEFAULT_SECTIONS;
-    }
-  }
-  useEffect(() => {
-    if (!hasSections && onUpdateSections) onUpdateSections(activeSections);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasSections]);
-
-  const updateSections = (ns) => {
-    if (onUpdateSections) onUpdateSections(ns);
-    try { localStorage.setItem('misc_bill_sections', JSON.stringify(ns)); } catch (e) {}
-  };
-
-  // Build allMonths: current month + any month that has payments/logs recorded
+  // Current month + every month that has logs or a one-time bill, newest first
   const allMonths = [...new Set([
     currentYM(),
     ...Object.keys(billPaymentLogs || {}),
-    // also months from one-time bills
-    ...bills.filter(b => b.type === 'one-time' && b.month).map(b => b.month),
+    ...bills.filter(b => isOneTime(b) && b.month).map(b => b.month),
   ])].sort().reverse();
+  const monthIdx = allMonths.indexOf(filterMonth);
 
-  // Bills that apply to the selected month (recurring ones only from the month they were added)
+  const paidFor = (billId) => billPaidFromLogs(billPaymentLogs, filterMonth, billId);
+  const logCountFor = (billId) => billLogsFor(billPaymentLogs, filterMonth, billId).length;
+  const lastPaymentFor = (billId) => [...billLogsFor(billPaymentLogs, filterMonth, billId)]
+    .sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.recordedAt || '').localeCompare(b.recordedAt || ''))
+    .pop();
+
+  // Filters
   const monthBills = billsForMonth(bills, filterMonth);
-  // Toggle bar: show one group at a time. Summary cards, CSV and the list
-  // below all follow the toggle, so e.g. "House" shows house totals only.
-  const filteredBills = groupFilter === 'All'
-    ? monthBills
-    : monthBills.filter(b => normalizeBillCategory(b.category) === groupFilter);
+  const byType = (b) => typeFilter === 'all' || (typeFilter === 'one-time' ? isOneTime(b) : !isOneTime(b));
+  const byGroup = (b) => groupFilter === 'All' || normalizeBillCategory(b.category) === groupFilter;
+  const filteredBills = monthBills.filter(b => byType(b) && byGroup(b));
   const groupCounts = BILL_GROUPS.reduce((acc, g) => {
-    acc[g] = g === 'All' ? monthBills.length : monthBills.filter(b => normalizeBillCategory(b.category) === g).length;
+    acc[g] = monthBills.filter(b => byType(b) && (g === 'All' || normalizeBillCategory(b.category) === g)).length;
     return acc;
   }, {});
-  // Bills whose section was deleted still count; show them under Monthly so they stay editable
-  const knownSections = new Set(activeSections.map(s => s.id));
-  const sectionOf = (b) => (knownSections.has(b.type) ? b.type : 'monthly');
+  const typeCounts = TYPE_FILTERS.reduce((acc, t) => {
+    acc[t.id] = monthBills.filter(b => byGroup(b) && (t.id === 'all' || (t.id === 'one-time' ? isOneTime(b) : !isOneTime(b)))).length;
+    return acc;
+  }, {});
 
-  const getBillsForSection = (sectionId) => {
-    const filtered = filteredBills.filter(b => sectionOf(b) === sectionId);
-    return [...filtered].sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999));
-  };
+  // Sort: normal = saved drag order; otherwise by total amount
+  const normalOrder = (a, b) => (a.order ?? 9999) - (b.order ?? 9999) || (a.createdAt || '').localeCompare(b.createdAt || '');
+  const sorter = sortBy === 'asc'
+    ? (a, b) => (Number(a.amount) || 0) - (Number(b.amount) || 0) || normalOrder(a, b)
+    : sortBy === 'desc'
+      ? (a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0) || normalOrder(a, b)
+      : normalOrder;
+  const sorted = [...filteredBills].sort(sorter);
+  const isSettled = (b) => (Number(b.amount) || 0) > 0 && paidFor(b.id) >= (Number(b.amount) || 0);
+  const toPay = sorted.filter(b => !isSettled(b));
+  const settled = sorted.filter(isSettled);
 
-  const sumOf = (list) => list.reduce((s, b) => s + (Number(b.amount) || 0), 0);
-  const monthlyTemplateTotal = sumOf(filteredBills.filter(b => b.type !== 'one-time'));
-  const oneTimeTotal = sumOf(filteredBills.filter(b => b.type === 'one-time'));
-  const totalThisMonth = monthlyTemplateTotal + oneTimeTotal;
-
-  // Paid / pending derived from the payment LOGS for the selected month
-  const paidFor = (billId) => billPaidFromLogs(billPaymentLogs, filterMonth, billId);
-  const paidTotal = filteredBills.reduce((s, b) => s + Math.min(paidFor(b.id), Number(b.amount) || 0), 0);
-  const pendingTotal = Math.max(0, totalThisMonth - paidTotal);
+  // Summary (follows the filters)
+  const total = filteredBills.reduce((s, b) => s + (Number(b.amount) || 0), 0);
+  const paid = filteredBills.reduce((s, b) => s + Math.min(paidFor(b.id), Number(b.amount) || 0), 0);
+  const pending = Math.max(0, total - paid);
+  const pct = total > 0 ? Math.round((paid / total) * 100) : 0;
 
   const exportCSV = () => {
-    const rows = [['Bill', 'Section', 'Category', 'Total (AED)', 'Paid (AED)', 'Pending (AED)', 'Status']];
-    filteredBills.forEach(b => {
-      const total = Number(b.amount) || 0;
-      const paid = paidFor(b.id);
-      rows.push([b.name, (activeSections.find(s => s.id === sectionOf(b)) || {}).label || b.type, normalizeBillCategory(b.category), total, paid, Math.max(0, total - paid), getBillStatus(paid, total)]);
+    const rows = [['Bill', 'Type', 'Category', 'Total (AED)', 'Paid (AED)', 'Pending (AED)', 'Payments']];
+    sorted.forEach(b => {
+      const t = Number(b.amount) || 0;
+      const p = paidFor(b.id);
+      rows.push([b.name, isOneTime(b) ? 'One-time' : 'Monthly', billCategoryLabel(normalizeBillCategory(b.category)), t, p, Math.max(0, t - p), logCountFor(b.id)]);
     });
     downloadCSV(`bills-${filterMonth}.csv`, rows);
   };
 
-  const resetAddForm = () => { setAddForm(EMPTY_FORM); setShowAddForm(false); };
+  /* ── add / edit ── */
+  const validate = (form) => {
+    if (!form.name.trim()) { alert('Bill name is required.'); return false; }
+    if (!form.amount || Number(form.amount) <= 0) { alert('Please enter a valid amount.'); return false; }
+    return true;
+  };
+  const toPayload = (form) => {
+    const { paidAmount: _p, ...rest } = form;
+    return { ...rest, name: form.name.trim(), amount: Number(form.amount), category: normalizeBillCategory(form.category) };
+  };
 
-  const handleAddSave = () => {
-    if (!addForm.name.trim()) return alert('Bill name is required.');
-    if (!addForm.amount || Number(addForm.amount) <= 0) return alert('Please enter a valid amount.');
-    const payload = { ...addForm, amount: Number(addForm.amount), category: normalizeBillCategory(addForm.category) };
-    delete payload.paidAmount;
+  const openAdd = () => {
+    setEditingBillId(null); setPayingBillId(null);
+    setAddForm({ ...EMPTY_FORM, month: filterMonth, category: groupFilter !== 'All' ? groupFilter : 'Personal', type: typeFilter === 'one-time' ? 'one-time' : 'monthly' });
+    setShowAddForm(true);
+  };
+  const saveAdd = () => {
+    if (!validate(addForm)) return;
+    const maxOrder = bills.reduce((m, b) => Math.max(m, b.order ?? -1), -1);
     onAdd({
-      ...payload,
-      order: getBillsForSection(addForm.type).length,
+      ...toPayload(addForm),
+      order: maxOrder + 1,
       id: `bill-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       createdAt: new Date().toISOString(),
     });
-    resetAddForm();
+    setShowAddForm(false);
   };
 
-  // Inline edit — opens right under this bill's row
-  const handleEdit = (bill) => {
-    setPaymentBillId(null);
-    setEditForm({ name: bill.name, amount: bill.amount, type: bill.type, category: normalizeBillCategory(bill.category), month: bill.month || currentYM() });
+  const openEdit = (bill) => {
+    setPayingBillId(null); setShowAddForm(false);
+    setEditForm({ name: bill.name, amount: bill.amount, type: isOneTime(bill) ? 'one-time' : 'monthly', category: normalizeBillCategory(bill.category), month: bill.month || currentYM() });
     setEditingBillId(bill.id);
   };
-
-  const handleEditSave = () => {
-    if (!editForm.name.trim()) return alert('Bill name is required.');
-    if (!editForm.amount || Number(editForm.amount) <= 0) return alert('Please enter a valid amount.');
-    const payload = { ...editForm, amount: Number(editForm.amount), category: normalizeBillCategory(editForm.category) };
-    delete payload.paidAmount;
-    onUpdate(editingBillId, payload);
+  const saveEdit = () => {
+    if (!validate(editForm)) return;
+    // Same id, so every payment log stays attached after a rename
+    onUpdate(editingBillId, toPayload(editForm));
     setEditingBillId(null);
   };
 
-  // Mark Paid adds ONE log for the remaining balance (kind 'full'), so the
-  // payment is visible in Bill Logs like every other payment.
-  const handleMarkPaid = (bill) => {
+  const startTotalEdit = (bill) => {
     if (!isCurrentMonth) return;
-    const pending = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
-    if (pending <= 0) return;
-    if (onAddPayment) onAddPayment(filterMonth, bill.id, pending, localDateStr(new Date()), 'full');
+    setTotalDraft(String(Number(bill.amount) || ''));
+    setTotalEditId(bill.id);
+  };
+  // Runs once, on blur (Enter blurs the field; Escape blurs with cancel set)
+  const saveTotalEdit = (bill) => {
+    setTotalEditId(null);
+    if (cancelTotalRef.current) { cancelTotalRef.current = false; return; }
+    const next = Number(totalDraft);
+    if (!(next > 0)) return alert('Total must be greater than 0.');
+    const alreadyPaid = paidFor(bill.id);
+    if (next < alreadyPaid) return alert(`${money(alreadyPaid)} is already paid for "${bill.name}" this month, so the total can't be lower than that.`);
+    if (next !== (Number(bill.amount) || 0)) onUpdate(bill.id, { amount: Math.round(next * 100) / 100 });
   };
 
-  const handleMarkUnpaid = (bill) => {
-    if (!isCurrentMonth) return;
-    // Undo removes only the LAST payment log for this bill/month — earlier
-    // partial payments stay in the history instead of being wiped.
-    if (onUndoLastPayment) onUndoLastPayment(filterMonth, bill.id);
+  /* ── payments ── */
+  // Partial: any amount up to what's pending, with a date and note
+  const openPartial = (bill) => {
+    setEditingBillId(null); setShowAddForm(false);
+    setPayForm({ amount: '', date: localDateStr(new Date()), note: '' });
+    setPayingBillId(bill.id);
   };
-
-  const startAddPayment = (bill) => {
-    if (!isCurrentMonth) return;
-    setEditingBillId(null);
-    setPaymentAmount('');
-    setPaymentDate(localDateStr(new Date()));
-    setPaymentBillId(bill.id);
-  };
-
-  const saveAddPayment = (bill) => {
-    const val = Number(paymentAmount) || 0;
-    const pending = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
-    if (val <= 0) return alert('Enter an amount greater than 0.');
-    if (val > pending) return alert(`Only AED ${pending.toLocaleString()} is still pending for "${bill.name}".`);
-    if (onAddPayment) onAddPayment(filterMonth, bill.id, val, paymentDate || localDateStr(new Date()), val >= pending ? 'full' : 'partial');
-    setPaymentBillId(null);
-    setPaymentAmount('');
-  };
-
-  // Drag handlers
-  const handleDragStart = (e, billId, sectionId) => {
-    setDragBillId(billId);
-    setDragSectionId(sectionId);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-  const handleDragOver = (e, billId) => {
-    e.preventDefault();
-    if (billId !== dragBillId) setDragOverBillId(billId);
-  };
-  const handleDrop = (e, sectionId) => {
-    e.preventDefault();
-    if (!dragBillId || dragSectionId !== sectionId || !dragOverBillId || dragBillId === dragOverBillId) {
-      setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); return;
-    }
-    const secBills = getBillsForSection(sectionId);
-    const fromIdx = secBills.findIndex(b => b.id === dragBillId);
-    const toIdx = secBills.findIndex(b => b.id === dragOverBillId);
-    if (fromIdx === -1 || toIdx === -1) { setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); return; }
-    const reordered = [...secBills];
-    const [moved] = reordered.splice(fromIdx, 1);
-    reordered.splice(toIdx, 0, moved);
-    const updatedBills = bills.map(b => {
-      const idx = reordered.findIndex(r => r.id === b.id);
-      return idx !== -1 ? { ...b, order: idx } : b;
+  // Pay full: one click records the whole pending balance (Undo is in the ⋯ menu)
+  const payFull = (bill) => {
+    const due = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
+    if (due <= 0) return;
+    onAddPayment(filterMonth, bill.id, due, localDateStr(new Date()), 'full', '', {
+      billTotal: Number(bill.amount) || 0,
+      billName: bill.name,
     });
-    if (onReorder) onReorder(updatedBills);
-    setDragBillId(null); setDragOverBillId(null); setDragSectionId(null);
+    if (payingBillId === bill.id) setPayingBillId(null);
+  };
+  const savePay = (bill) => {
+    const amount = Number(payForm.amount) || 0;
+    const due = Math.max(0, (Number(bill.amount) || 0) - paidFor(bill.id));
+    if (amount <= 0) return alert('Enter an amount greater than 0.');
+    if (amount > due + 0.001) return alert(`Only ${money(due)} is still pending for "${bill.name}".`);
+    onAddPayment(filterMonth, bill.id, amount, payForm.date || localDateStr(new Date()), amount >= due ? 'full' : 'partial', payForm.note.trim(), {
+      billTotal: Number(bill.amount) || 0,
+      billName: bill.name,
+    });
+    setPayingBillId(null);
   };
 
-  // Section edit
-  const startEditSection = (sec) => { setEditSectionId(sec.id); setEditSectionLabel(sec.label); };
-  const saveEditSection = () => {
-    if (editSectionLabel.trim()) updateSections(activeSections.map(s => s.id === editSectionId ? { ...s, label: editSectionLabel.trim() } : s));
-    setEditSectionId(null);
-  };
-  const handleAddSection = () => {
-    if (!newSectionLabel.trim()) return;
-    updateSections([...activeSections, { id: `custom-${Date.now()}`, label: newSectionLabel.trim(), color: '#6366f1' }]);
-    setNewSectionLabel(''); setShowAddSection(false);
-  };
-  const handleDeleteSection = (sectionId) => {
-    if (['monthly', 'one-time'].includes(sectionId)) return;
-    const moved = bills.filter(b => b.type === sectionId);
-    if (!window.confirm(`Delete this section?${moved.length ? ` Its ${moved.length} bill(s) will move to Monthly Bills.` : ''}`)) return;
-    if (moved.length && onReorder) onReorder(bills.map(b => (b.type === sectionId ? { ...b, type: 'monthly' } : b)));
-    updateSections(activeSections.filter(s => s.id !== sectionId));
+  /* ── drag to reorder (normal order only) ── */
+  const canDrag = isCurrentMonth && sortBy === 'normal';
+  const handleDrop = (e) => {
+    e.preventDefault();
+    if (dragBillId && dragOverBillId && dragBillId !== dragOverBillId) {
+      const all = [...bills].sort(normalOrder);
+      const from = all.findIndex(b => b.id === dragBillId);
+      const to = all.findIndex(b => b.id === dragOverBillId);
+      if (from !== -1 && to !== -1) {
+        const [moved] = all.splice(from, 1);
+        all.splice(to, 0, moved);
+        const orderOf = new Map(all.map((b, i) => [b.id, i]));
+        onReorder(bills.map(b => ({ ...b, order: orderOf.get(b.id) })));
+      }
+    }
+    setDragBillId(null); setDragOverBillId(null);
   };
 
-  const cardStyle = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 14, padding: '18px 20px', boxShadow: 'var(--shadow)' };
-
-  const formatMonth = fmtMonth;
-
-  // Shared inline form fields (used by both Add at top and Edit under a row)
+  /* ── pieces ── */
   const formFields = (form, setForm) => (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 14 }}>
+    <div className="pay-fields">
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Bill Name *</div>
-        <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. House Rent, Gulraiz — Loan" />
+        <div className="field-label">Name *</div>
+        <input className="form-input" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="e.g. House rent, Gulraiz loan" autoFocus />
       </div>
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
+        <div className="field-label">Amount (AED) *</div>
         <input className="form-input" type="number" min="0" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" />
       </div>
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Section</div>
+        <div className="field-label">Type</div>
         <select className="form-select" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>
-          {activeSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          <option value="monthly">Monthly</option>
+          <option value="one-time">One-time</option>
         </select>
       </div>
       <div>
-        <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Category</div>
+        <div className="field-label">Category</div>
         <select className="form-select" value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}>
-          {BILL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          {BILL_CATEGORIES.map(c => <option key={c} value={c}>{billCategoryLabel(c)}</option>)}
         </select>
       </div>
       {form.type === 'one-time' && (
         <div>
-          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Month</div>
+          <div className="field-label">Month</div>
           <input className="form-input" type="month" value={form.month} onChange={e => setForm({ ...form, month: e.target.value })} />
         </div>
       )}
     </div>
   );
 
+  const renderRow = (bill) => {
+    const t = Number(bill.amount) || 0;
+    const p = paidFor(bill.id);
+    const due = Math.max(0, t - p);
+    const done = isSettled(bill);
+    const logs = logCountFor(bill.id);
+    const editing = editingBillId === bill.id;
+    const paying = payingBillId === bill.id;
+    const rowPct = t > 0 ? Math.min(100, (p / t) * 100) : 0;
+    const last = lastPaymentFor(bill.id);
+
+    return (
+      <React.Fragment key={bill.id}>
+        <div
+          className={[
+            'bill-row',
+            done && 'settled',
+            (editing || paying) && 'open',
+            dragOverBillId === bill.id && dragBillId !== bill.id && 'drop-target',
+            dragBillId === bill.id && 'dragging',
+          ].filter(Boolean).join(' ')}
+          draggable={canDrag}
+          onDragStart={e => { setDragBillId(bill.id); e.dataTransfer.effectAllowed = 'move'; }}
+          onDragOver={e => { if (!canDrag) return; e.preventDefault(); if (bill.id !== dragBillId) setDragOverBillId(bill.id); }}
+          onDrop={handleDrop}
+          onDragEnd={() => { setDragBillId(null); setDragOverBillId(null); }}
+        >
+          <div className={`drag-handle${canDrag ? '' : ' off'}`} title="Drag to reorder">⠿</div>
+
+          <div style={{ minWidth: 0 }}>
+            <div className="bill-name" title={bill.name}>{bill.name}{!isOneTime(bill) && <RecurIcon />}</div>
+            <div className="bill-meta">
+              <span className="chip">{billCategoryLabel(normalizeBillCategory(bill.category))}</span>
+              {last && <span className="last-paid">Last paid {money(last.amount)} · {fmtDate(last.date)}</span>}
+            </div>
+          </div>
+
+          <div className="bill-amounts">
+            {totalEditId === bill.id ? (
+              <input
+                className="total-input"
+                type="number" min="0" step="any" autoFocus
+                aria-label={`Total for ${bill.name}`}
+                value={totalDraft}
+                onChange={e => setTotalDraft(e.target.value)}
+                onFocus={e => e.target.select()}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') { cancelTotalRef.current = true; e.currentTarget.blur(); }
+                }}
+                onBlur={() => saveTotalEdit(bill)}
+              />
+            ) : (
+              <div
+                className={`bill-total${isCurrentMonth ? ' editable' : ''}`}
+                onDoubleClick={() => startTotalEdit(bill)}
+                title={isCurrentMonth ? 'Double-click to change the total' : undefined}
+              >
+                {money(t)}
+              </div>
+            )}
+            <div className="bill-split">
+              <span className={due > 0 ? 'p' : 'z'}>Pending {money(due)}</span>
+              <span className="sep">|</span>
+              <span className={p > 0 ? 'd' : 'z'}>Paid {money(p)}</span>
+            </div>
+            {onViewLogs && (
+              <button className="logs-link" onClick={() => onViewLogs(bill.id)} title="Payment history for this bill">
+                Logs{logs ? ` (${logs})` : ''} ›
+              </button>
+            )}
+          </div>
+
+          <div className="bill-actions">
+            {done ? (
+              <span className="paid-badge">✓ Paid</span>
+            ) : isCurrentMonth ? (
+              <>
+                <button className="pay-btn" onClick={() => payFull(bill)} title={`Record ${money(due)} paid today`}>Pay full</button>
+                <button className={`partial-btn${paying ? ' on' : ''}`} onClick={() => (paying ? setPayingBillId(null) : openPartial(bill))} aria-expanded={paying}>Partial</button>
+              </>
+            ) : (
+              <span className="paid-badge" style={{ color: 'var(--text-light)', background: 'var(--border-light)' }}>{p > 0 ? 'Partial' : 'Unpaid'}</span>
+            )}
+            {isCurrentMonth && (
+              <RowMenu items={[
+                { label: 'Edit bill', onClick: () => openEdit(bill) },
+                {
+                  label: 'Category',
+                  hint: billCategoryLabel(normalizeBillCategory(bill.category)),
+                  submenu: BILL_CATEGORIES.map(c => ({
+                    label: billCategoryLabel(c),
+                    checked: normalizeBillCategory(bill.category) === c,
+                    onClick: () => { if (normalizeBillCategory(bill.category) !== c) onUpdate(bill.id, { category: c }); },
+                  })),
+                },
+                { label: 'Delete bill', danger: true, onClick: () => { if (window.confirm(`Delete "${bill.name}"? Its payment logs will be removed too.`)) onDelete(bill.id); } },
+              ]} />
+            )}
+          </div>
+
+          {t > 0 && <div className="bill-bar" aria-hidden="true"><span style={{ width: `${rowPct}%` }} /></div>}
+        </div>
+
+        {paying && (
+          <div className="row-panel">
+            <div className="row-panel-title">Partial payment · {bill.name}</div>
+            <div className="row-panel-sub">Pay any amount up to {money(due)}{p > 0 ? ` (${money(p)} of ${money(t)} already paid)` : ''}. It is saved to Logs with its date.</div>
+            <div className="pay-fields">
+              <div>
+                <div className="field-label">Amount paid (AED)</div>
+                <input
+                  autoFocus className="form-input" type="number" min="0" max={due} step="any" value={payForm.amount}
+                  placeholder={`Up to ${money(due)}`}
+                  onChange={e => setPayForm({ ...payForm, amount: e.target.value })}
+                  onKeyDown={e => { if (e.key === 'Enter') savePay(bill); if (e.key === 'Escape') setPayingBillId(null); }}
+                />
+                {Number(payForm.amount) > 0 && Number(payForm.amount) <= due && (
+                  <div className="pay-preview">{money(Math.max(0, due - Number(payForm.amount)))} will still be pending</div>
+                )}
+              </div>
+              <div>
+                <div className="field-label">Date paid</div>
+                <input className="form-input" type="date" value={payForm.date} onChange={e => setPayForm({ ...payForm, date: e.target.value })} />
+              </div>
+              <div>
+                <div className="field-label">Note</div>
+                <input className="form-input" value={payForm.note} onChange={e => setPayForm({ ...payForm, note: e.target.value })} placeholder="Cash, bank transfer…" onKeyDown={e => { if (e.key === 'Enter') savePay(bill); }} />
+              </div>
+            </div>
+            <div className="panel-foot">
+              <button className="btn btn-ghost btn-sm" onClick={() => setPayingBillId(null)}>Cancel</button>
+              <button className="btn btn-primary btn-sm" onClick={() => savePay(bill)} disabled={!(Number(payForm.amount) > 0)}>Save payment</button>
+            </div>
+          </div>
+        )}
+
+        {editing && (
+          <div className="row-panel">
+            <div className="row-panel-title">Edit · {bill.name}</div>
+            <div className="row-panel-sub">Renaming keeps all of this bill's payment logs.</div>
+            {formFields(editForm, setEditForm)}
+            <div className="panel-foot">
+              <button className="btn btn-ghost btn-sm" onClick={() => setEditingBillId(null)}>Cancel</button>
+              <button className="btn btn-primary btn-sm" onClick={saveEdit}>Save changes</button>
+            </div>
+          </div>
+        )}
+      </React.Fragment>
+    );
+  };
+
   return (
     <div className="animate-fade-in">
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+      <div className="pay-head">
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Misc Payments</h1>
-          <div style={{ fontSize: 13, color: 'var(--text-light)' }}>Regular bills &amp; expenses · deducted from net profit</div>
+          <h1>Accounts</h1>
+          <div className="pay-sub">Bills for the month. Every payment is kept in Logs.</div>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <select
-            value={filterMonth}
-            onChange={e => setFilterMonth(e.target.value)}
-            className="form-select"
-            style={{ padding: '9px 14px', fontSize: 13, fontWeight: 600 }}
-          >
-            {allMonths.map(m => (
-              <option key={m} value={m}>{formatMonth(m)}{m === currentYM() ? ' (Current)' : ''}</option>
-            ))}
-          </select>
-          {!isCurrentMonth && (
-            <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 6, padding: '4px 12px', background: 'rgba(99,102,241,0.12)', color: '#6366f1' }}>
-              📅 Viewing History
-            </span>
-          )}
-          <button
-            onClick={exportCSV}
-            disabled={filteredBills.length === 0}
-            className="btn btn-ghost btn-md"
-            title="Export this month to CSV"
-          >
-            <Icon name="download" size={14} /> CSV
-          </button>
-          {onViewLogs && (
-            <button
-              onClick={() => onViewLogs(null)}
-              className="btn btn-ghost btn-md"
-              title="Open Bill Logs — payment history by bill"
-            >
-              <Icon name="file-text" size={14} /> Bill Logs
-            </button>
-          )}
-          <button
-            onClick={() => { resetAddForm(); setShowAddForm(true); }}
-            style={{ background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}
-          >
-            <Icon name="plus" size={14} /> Add Bill
-          </button>
+        <div className="pay-actions">
+          <div className="month-nav">
+            <button aria-label="Previous month" disabled={monthIdx >= allMonths.length - 1} onClick={() => setFilterMonth(allMonths[monthIdx + 1])}>‹</button>
+            <select value={filterMonth} onChange={e => setFilterMonth(e.target.value)} aria-label="Month">
+              {allMonths.map(m => <option key={m} value={m}>{fmtMonth(m)}</option>)}
+            </select>
+            <button aria-label="Next month" disabled={monthIdx <= 0} onClick={() => setFilterMonth(allMonths[monthIdx - 1])}>›</button>
+          </div>
+          {onViewLogs && <button className="btn btn-ghost btn-md" onClick={() => onViewLogs(null)}>Logs</button>}
+          <button className="btn btn-ghost btn-md" onClick={exportCSV} disabled={!sorted.length} title="Export to CSV"><Icon name="download" size={14} /> CSV</button>
+          {isCurrentMonth && <button className="btn btn-primary btn-md" onClick={openAdd}><Icon name="plus" size={14} /> Add bill</button>}
         </div>
       </div>
 
-      {/* Month banner for history view */}
       {!isCurrentMonth && (
-        <div style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(99,102,241,0.03))', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 12, padding: '12px 18px', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 18 }}>📅</span>
+        <div className="history-banner">
+          Viewing {fmtMonth(filterMonth)}. Past months are read-only.
+          <button onClick={() => setFilterMonth(currentYM())}>Back to this month</button>
+        </div>
+      )}
+
+      <div className="pay-summary">
+        <div className="pay-summary-grid">
           <div>
-            <div style={{ fontWeight: 700, fontSize: 14, color: '#6366f1' }}>Viewing {formatMonth(filterMonth)}</div>
-            <div style={{ fontSize: 12, color: 'var(--text-light)' }}>This is a historical record — payments are read-only. Switch to current month to make changes.</div>
+            <div className="pay-stat-label">Total</div>
+            <div className="pay-stat-val">{money(total)}</div>
+          </div>
+          <div>
+            <div className="pay-stat-label">Pending</div>
+            <div className="pay-stat-val pending">{money(pending)}</div>
+          </div>
+          <div>
+            <div className="pay-stat-label">Paid</div>
+            <div className="pay-stat-val paid">{money(paid)}</div>
           </div>
         </div>
-      )}
+        <div className="pay-progress" aria-hidden="true"><span style={{ width: `${pct}%` }} /></div>
+        <div className="pay-progress-note">{pct}% paid · {settled.length} of {sorted.length} bill{sorted.length === 1 ? '' : 's'} settled</div>
+      </div>
 
-      {/* Summary Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 14, marginBottom: 28 }}>
-        {[
-          { label: 'Monthly Bills', val: monthlyTemplateTotal, color: '#ef4444' },
-          { label: 'One-Time', val: oneTimeTotal, color: '#f59e0b' },
-          { label: 'Total Amount', val: totalThisMonth, color: '#8b5cf6' },
-          { label: 'Paid Amount', val: paidTotal, color: '#10b981' },
-          { label: 'Pending Amount', val: pendingTotal, color: '#ef4444' },
-        ].map(({ label, val, color }) => (
-          <div key={label} style={cardStyle}>
-            <div style={{ fontSize: 10, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.5, fontWeight: 600, marginBottom: 8 }}>{label}</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color }}>AED {Number(val).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+      <div className="pay-toolbar">
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="seg" role="tablist" aria-label="Category">
+            {BILL_GROUPS.map(g => (
+              <button key={g} role="tab" aria-selected={groupFilter === g} className={groupFilter === g ? 'on' : ''} onClick={() => setGroupFilter(g)}>
+                {billCategoryLabel(g)}<span className="count">{groupCounts[g]}</span>
+              </button>
+            ))}
           </div>
-        ))}
+          <div className="seg" role="tablist" aria-label="Type">
+            {TYPE_FILTERS.map(t => (
+              <button key={t.id} role="tab" aria-selected={typeFilter === t.id} className={typeFilter === t.id ? 'on' : ''} onClick={() => setTypeFilter(t.id)}>
+                {t.label}<span className="count">{typeCounts[t.id]}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <select className="sort-select" value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="Sort">
+          {SORTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
       </div>
 
-      {/* Toggle bar — All | Personal | Company | House | Dues */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 24 }} role="tablist" aria-label="Filter bills by group">
-        {BILL_GROUPS.map(g => {
-          const active = groupFilter === g;
-          return (
-            <button
-              key={g}
-              role="tab"
-              aria-selected={active}
-              onClick={() => setGroupFilter(g)}
-              style={{
-                padding: '8px 18px', borderRadius: 999, cursor: 'pointer', fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
-                background: active ? 'var(--primary)' : 'var(--card)',
-                color: active ? '#fff' : 'var(--text-mid)',
-                border: active ? '1.5px solid var(--primary)' : '1.5px solid var(--border)',
-                boxShadow: active ? 'var(--shadow)' : 'none',
-              }}
-            >
-              {g} ({groupCounts[g]})
-            </button>
-          );
-        })}
-        {groupFilter !== 'All' && (
-          <span style={{ alignSelf: 'center', fontSize: 12, color: 'var(--text-light)', marginLeft: 4 }}>
-            Showing {filteredBills.length} of {monthBills.length} bills · totals above are for {groupFilter} only
-          </span>
-        )}
-      </div>
-
-      {/* Add Bill form (new bills only — editing happens inline under the row) */}
       {showAddForm && (
-        <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderRadius: 14, padding: 24, marginBottom: 24, boxShadow: 'var(--shadow-md)' }}>
-          <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 18 }}>
-            ➕ Add New Bill
-          </div>
+        <div className="row-panel" style={{ borderRadius: 12, borderTop: '1px solid var(--text-faint)', marginBottom: 18 }}>
+          <div className="row-panel-title" style={{ marginBottom: 12 }}>New bill</div>
           {formFields(addForm, setAddForm)}
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button onClick={resetAddForm} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-            <button onClick={handleAddSave} style={{ padding: '9px 20px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
-              Save Bill
-            </button>
+          <div className="panel-foot">
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowAddForm(false)}>Cancel</button>
+            <button className="btn btn-primary btn-sm" onClick={saveAdd}>Add bill</button>
           </div>
         </div>
       )}
 
-      {/* Empty state */}
-      {bills.length === 0 && (
-        <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-light)', background: 'var(--card)', borderRadius: 16, border: '1px solid var(--border)' }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>🧾</div>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>No bills added yet</div>
-          <div style={{ fontSize: 13 }}>Add your recurring bills like rent, groceries, utilities to track and deduct from net profit.</div>
+      {bills.length === 0 ? (
+        <div className="empty-state" style={{ textAlign: 'center', padding: '56px 20px', color: 'var(--text-light)', background: 'var(--card)', borderRadius: 14, border: '1px solid var(--border)' }}>
+          <div style={{ fontWeight: 600, marginBottom: 6, color: 'var(--text)' }}>No bills yet</div>
+          <div style={{ fontSize: 13 }}>Add rent, utilities, loans and other regular payments to track them here.</div>
         </div>
-      )}
-
-      {/* Sections */}
-      {activeSections.map(section => {
-        const items = getBillsForSection(section.id);
-        return (
-          <div key={section.id} style={{ marginBottom: 24 }}
-            onDragOver={e => e.preventDefault()}
-            onDrop={e => handleDrop(e, section.id)}
-          >
-            {/* Section Header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', borderBottom: '1px solid var(--border-light)', marginBottom: 10 }}>
-              {editSectionId === section.id ? (
-                <>
-                  <input
-                    autoFocus
-                    value={editSectionLabel}
-                    onChange={e => setEditSectionLabel(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') saveEditSection(); if (e.key === 'Escape') setEditSectionId(null); }}
-                    style={{ fontSize: 12, fontWeight: 700, background: 'var(--input-bg)', border: '1px solid var(--primary)', borderRadius: 6, padding: '3px 10px', color: 'inherit', fontFamily: 'inherit', outline: 'none', width: 220 }}
-                  />
-                  <button onClick={saveEditSection} style={{ fontSize: 11, padding: '3px 10px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600 }}>Save</button>
-                  <button onClick={() => setEditSectionId(null)} style={{ fontSize: 11, padding: '3px 10px', background: 'none', border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>✕</button>
-                </>
-              ) : (
-                <>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-faint)', textTransform: 'uppercase', letterSpacing: 1.5, flex: 1 }}>{section.label}</div>
-                  <button onClick={() => startEditSection(section)} title="Rename section" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', fontSize: 13, padding: '2px 6px' }}>✎</button>
-                  {!['monthly', 'one-time'].includes(section.id) && (
-                    <button onClick={() => handleDeleteSection(section.id)} title="Delete section" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-faint)', fontSize: 16, padding: '2px 6px', lineHeight: 1 }}>×</button>
-                  )}
-                </>
-              )}
-            </div>
-
-            {/* Bill rows */}
-            {items.length === 0 && (
-              <div style={{ fontSize: 12, color: 'var(--text-faint)', padding: '10px 0 4px', fontStyle: 'italic' }}>No bills in this section</div>
-            )}
-            {items.map(bill => {
-              const totalAmt = Number(bill.amount) || 0;
-              const paidAmt = paidFor(bill.id);
-              const pendingAmt = Math.max(0, totalAmt - paidAmt);
-              const status = getBillStatus(paidAmt, totalAmt);
-              const isDragTarget = dragOverBillId === bill.id && dragSectionId === section.id && dragBillId !== bill.id;
-              const isEditingThisBill = editingBillId === bill.id;
-              const isAddingPayment = paymentBillId === bill.id;
-              const logCount = billLogsFor(billPaymentLogs, filterMonth, bill.id).length;
-
-              return (
-                <React.Fragment key={bill.id}>
-                  <div
-                    draggable={isCurrentMonth}
-                    onDragStart={e => handleDragStart(e, bill.id, section.id)}
-                    onDragOver={e => handleDragOver(e, bill.id)}
-                    onDragEnd={() => { setDragBillId(null); setDragOverBillId(null); setDragSectionId(null); }}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-                      padding: '13px 16px', background: 'var(--card)',
-                      border: isDragTarget ? `2px solid var(--primary)` : `1px solid ${status === 'paid' ? 'rgba(16,185,129,0.2)' : 'var(--border)'}`,
-                      borderRadius: 12, marginBottom: isEditingThisBill || isAddingPayment ? 0 : 8,
-                      borderBottomLeftRadius: isEditingThisBill || isAddingPayment ? 0 : 12,
-                      borderBottomRightRadius: isEditingThisBill || isAddingPayment ? 0 : 12,
-                      cursor: isCurrentMonth ? 'grab' : 'default',
-                      transition: 'box-shadow 0.2s, opacity 0.2s',
-                      opacity: dragBillId === bill.id ? 0.45 : 1,
-                    }}
-                    onMouseEnter={e => e.currentTarget.style.boxShadow = 'var(--shadow-md)'}
-                    onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
-                  >
-                    {/* Drag handle */}
-                    <div style={{ color: 'var(--text-faint)', fontSize: 16, flexShrink: 0, cursor: isCurrentMonth ? 'grab' : 'default', userSelect: 'none' }}>⠿</div>
-
-                    <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>
-                        {bill.name}
-                      </div>
-                      {bill.type === 'one-time' && bill.month && (
-                        <div style={{ fontSize: 11, color: '#f59e0b', marginTop: 4, fontWeight: 600 }}>{formatMonth(bill.month)}</div>
-                      )}
-                    </div>
-
-                    {/* Total (red) · Pending (yellow) | Paid (green) */}
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexShrink: 0 }}>
-                      <span style={{ fontWeight: 700, fontSize: 15, color: '#ef4444', whiteSpace: 'nowrap' }}>AED {totalAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                      <span style={{ fontWeight: 700, fontSize: 15, color: '#f59e0b', whiteSpace: 'nowrap' }}>AED {pendingAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                      <span style={{ color: 'var(--border)', fontSize: 14 }}>|</span>
-                      <span style={{ fontWeight: 700, fontSize: 15, color: '#10b981', whiteSpace: 'nowrap' }}>AED {paidAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                    </div>
-
-                    {/* Action buttons */}
-                    <div style={{ display: 'flex', gap: 5, flexShrink: 0, flexWrap: 'wrap' }}>
-                      {onViewLogs && (
-                        <button
-                          onClick={() => onViewLogs(bill.id)}
-                          title="Open this bill's payment history in Bill Logs"
-                          style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#6366f1', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
-                        >
-                          Logs{logCount > 0 ? ` (${logCount})` : ''}
-                        </button>
-                      )}
-                      {isCurrentMonth && status !== 'paid' && (
-                        <>
-                          <button
-                            onClick={() => handleMarkPaid(bill)}
-                            title="Mark as Fully Paid (adds a payment log for the remaining amount)"
-                            style={{ background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#10b981', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
-                          >
-                            Mark Paid
-                          </button>
-                          <button
-                            onClick={() => startAddPayment(bill)}
-                            title="Record a partial payment (adds to Paid, keeps a log)"
-                            style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#f59e0b', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
-                          >
-                            Partial
-                          </button>
-                        </>
-                      )}
-                      {isCurrentMonth && status === 'paid' && (
-                        <button
-                          onClick={() => handleMarkUnpaid(bill)}
-                          title="Undo the last payment for this bill"
-                          style={{ background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: '#ef4444', fontSize: 11, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap' }}
-                        >
-                          Undo
-                        </button>
-                      )}
-                      {isCurrentMonth && (
-                        <>
-                          <button onClick={() => handleEdit(bill)} title="Edit this bill (inline, right here)" style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 10px', cursor: 'pointer', color: 'var(--text-mid)', display: 'flex', alignItems: 'center' }}>
-                            <Icon name="edit" size={12} />
-                          </button>
-                          <button onClick={() => { if (window.confirm(`Delete "${bill.name}"? Its payment logs will be removed too.`)) onDelete(bill.id); }} title="Delete" style={{ background: 'none', border: 'none', color: 'var(--text-faint)', cursor: 'pointer', padding: '5px 8px', fontSize: 18, lineHeight: 1 }}>×</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Inline edit panel — directly under this bill's row */}
-                  {isEditingThisBill && (
-                    <div style={{ background: 'var(--card)', border: '1.5px solid var(--primary)', borderTop: 'none', borderRadius: '0 0 12px 12px', padding: '18px 20px', marginBottom: 8, boxShadow: 'var(--shadow-md)' }}>
-                      <div style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 14 }}>
-                        ✏️ Edit Bill — {bill.name}
-                      </div>
-                      {formFields(editForm, setEditForm)}
-                      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-                        <button onClick={() => setEditingBillId(null)} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-                        <button onClick={handleEditSave} style={{ padding: '9px 20px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
-                          Update Bill
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Inline partial-payment panel — directly under this bill's row */}
-                  {isAddingPayment && (
-                    <div style={{ background: 'var(--card)', border: '1.5px solid #f59e0b', borderTop: 'none', borderRadius: '0 0 12px 12px', padding: '18px 20px', marginBottom: 8, boxShadow: 'var(--shadow-md)' }}>
-                      <div style={{ fontSize: 12, color: '#f59e0b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 6 }}>
-                        💰 Record a Payment — {bill.name}
-                      </div>
-                      <div style={{ fontSize: 12, color: 'var(--text-light)', marginBottom: 14 }}>
-                        This ADDS to Paid (AED {paidAmt.toLocaleString()} paid so far, AED {pendingAmt.toLocaleString()} still pending) and writes a log entry — it does not replace the paid total.
-                      </div>
-                      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
-                        <div>
-                          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Amount (AED) *</div>
-                          <input
-                            autoFocus
-                            className="form-input"
-                            type="number" min="0" max={pendingAmt}
-                            value={paymentAmount}
-                            onChange={e => setPaymentAmount(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter') saveAddPayment(bill); if (e.key === 'Escape') setPaymentBillId(null); }}
-                            placeholder="0.00"
-                            style={{ width: 160 }}
-                          />
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 11, color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: 1.2, marginBottom: 6, fontWeight: 600 }}>Payment Date</div>
-                          <input className="form-input" type="date" value={paymentDate} onChange={e => setPaymentDate(e.target.value)} style={{ width: 170 }} />
-                        </div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-                        <button onClick={() => setPaymentBillId(null)} style={{ padding: '9px 20px', border: '1px solid var(--border)', borderRadius: 8, background: 'transparent', cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-                        <button onClick={() => saveAddPayment(bill)} style={{ padding: '9px 20px', background: '#f59e0b', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>
-                          Save Payment
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </div>
-        );
-      })}
-
-      {/* Add Section */}
-      {isCurrentMonth && (
-        showAddSection ? (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, marginBottom: 24 }}>
-            <input
-              autoFocus
-              value={newSectionLabel}
-              onChange={e => setNewSectionLabel(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleAddSection(); if (e.key === 'Escape') setShowAddSection(false); }}
-              placeholder="Section name e.g. 💼 Business Expenses"
-              style={{ flex: 1, padding: '9px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--input-bg)', color: 'inherit', fontFamily: 'inherit', fontSize: 13, outline: 'none' }}
-            />
-            <button onClick={handleAddSection} style={{ padding: '9px 18px', background: 'var(--primary)', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: 13, fontFamily: 'inherit' }}>Add</button>
-            <button onClick={() => setShowAddSection(false)} style={{ padding: '9px 14px', background: 'none', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }}>Cancel</button>
-          </div>
-        ) : (
-          <button onClick={() => setShowAddSection(true)} style={{ marginTop: 4, marginBottom: 24, background: 'none', border: '1.5px dashed var(--border)', borderRadius: 10, padding: '10px 20px', cursor: 'pointer', color: 'var(--text-light)', fontSize: 13, fontFamily: 'inherit', width: '100%' }}>
-            + Add New Section
-          </button>
-        )
+      ) : sorted.length === 0 ? (
+        <div className="empty-note" style={{ padding: '24px 2px' }}>No bills match these filters for {fmtMonth(filterMonth)}.</div>
+      ) : (
+        <>
+          {toPay.length > 0 ? toPay.map(renderRow) : (
+            <div className="empty-note" style={{ paddingBottom: 10 }}>Everything here is paid for {fmtMonth(filterMonth)}.</div>
+          )}
+          {settled.length > 0 && (
+            <>
+              <button className="paid-toggle" onClick={() => setShowPaid(!showPaid)} aria-expanded={showPaid}>
+                <span className="chevron" style={{ transform: showPaid ? 'rotate(90deg)' : 'none' }}>▶</span>
+                Paid · {settled.length} · {money(settled.reduce((s, b) => s + (Number(b.amount) || 0), 0))}
+              </button>
+              {showPaid && settled.map(renderRow)}
+            </>
+          )}
+          {!canDrag && isCurrentMonth && sorted.length > 1 && (
+            <div className="hint">Switch sort to "Normal order" to drag bills into your own order.</div>
+          )}
+        </>
       )}
     </div>
   );

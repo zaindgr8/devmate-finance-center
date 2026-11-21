@@ -518,11 +518,14 @@ export function billsSummary(bills = [], billPayments = {}, month) {
    stays Personal and can be re-tagged with one inline edit. */
 export const BILL_CATEGORIES = ['Personal', 'Company', 'House', 'Dues'];
 export const BILL_GROUPS = ['All', ...BILL_CATEGORIES];
+// Display names. Stored values stay the same, so existing bills need no migration.
+export const BILL_CATEGORY_LABELS = { Company: 'Business', Dues: 'Loan & Dues' };
+export const billCategoryLabel = (c) => BILL_CATEGORY_LABELS[c] || c;
 
 export function normalizeBillCategory(cat) {
   if (cat === 'Company' || cat === 'Business') return 'Company';
   if (cat === 'House') return 'House';
-  if (cat === 'Dues' || cat === 'Loan') return 'Dues';
+  if (cat === 'Dues' || cat === 'Loan' || cat === 'Loan & Dues') return 'Dues';
   return 'Personal'; // 'Personal', 'Private', 'Other', missing, anything else
 }
 
